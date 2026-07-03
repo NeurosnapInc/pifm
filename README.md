@@ -521,7 +521,6 @@ Evaluate permutation-invariant approaches:
 
 Test:
 
-- [ ] Concatenation only
 - [ ] Pairwise interaction features
 - [ ] Cross-attention between groups
 - [ ] Bilinear interaction layers
