@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=59.6.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pifm"
+version = "2026.07.03"
+authors = [
+  {name="Keaun Amani"},
+]
+description = "Fast protein-protein interaction and affinity prediction with fine-tuned protein language models."
+license = {file = "LICENSE"}
+readme = "README.md"
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: OS Independent",
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: Apache Software License",
+]
+requires-python = ">=3.8"
+dependencies = [
+  "accelerate",
+  "torch",
+  "transformers",
+  "sentencepiece",
+  "duckdb",
+  "neurosnap",
+]
+
+[project.optional-dependencies]
+dev = [
+  "datasets",
+  "plotly",
+  "scikit-learn",
+  "tqdm",
+  "ruff",
+  "tiktoken",
+  "protobuf",
+]
+
+[project.urls]
+Homepage = "https://github.com/NeurosnapInc/pifm"
+Issues = "https://github.com/NeurosnapInc/pifm/issues"
+
+[tool.setuptools]
+py-modules = ["aggregate_data", "calibration", "config", "ensemble_validate", "inference", "model", "tokenize_data", "train", "validate"]
+
+[tool.ruff]
+line-length = 150
+indent-width = 2
