@@ -44,7 +44,8 @@ Homepage = "https://github.com/NeurosnapInc/pifm"
 Issues = "https://github.com/NeurosnapInc/pifm/issues"
 
 [tool.setuptools]
-py-modules = ["aggregate_data", "calibration", "config", "model", "tokenize_data", "train", "validate"]
+py-modules = ["aggregate_data", "calibration", "config", "contract", "model", "tokenize_data", "train", "validate"]
+packages = ["sources"]
 
 [tool.ruff]
 line-length = 150

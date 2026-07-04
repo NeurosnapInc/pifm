@@ -13,49 +13,22 @@ Inspect results:
 
 import argparse
 import math
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import List, Optional, Sequence, Tuple
 
 import duckdb
 import pandas as pd
 
-
-SequenceGroup = Union[str, Sequence[str]]
-SourceFactory = Callable[[], Iterable["InteractionEntry"]]
-
-
-@dataclass(frozen=True)
-class InteractionEntry:
-  source: str
-  group1: SequenceGroup
-  group2: SequenceGroup
-  affinity_nm: Optional[float] = None
-  interaction_label: Optional[bool] = None
-
-
-@dataclass(frozen=True)
-class SourceSpec:
-  name: str
-  loader: SourceFactory
-
-
-def _empty_loader() -> Iterable[InteractionEntry]:
-  """Provide a no-op source loader placeholder.
-
-  This is only here so the file has a valid example loader shape before any
-  real data sources are registered. It returns an empty iterable and does not
-  perform any I/O or validation.
-  """
-  return []
+# InteractionEntry / SourceSpec live in ``contract`` so source loaders can import
+# them without a circular dependency on this module. Re-exported here so existing
+# imports (``from aggregate_data import InteractionEntry``) keep working.
+from contract import InteractionEntry, SequenceGroup, SourceSpec  # noqa: F401
+from sources import build_source_specs
 
 
 # Source priority is defined by list order. Earlier sources win if multiple sources
-# provide the same canonicalized group pair.
-SOURCE_SPECS: List[SourceSpec] = [
-  # Example:
-  # SourceSpec(name="bindingdb_curated", loader=iter_bindingdb_rows),
-]
+# provide the same canonicalized group pair. Registration lives in ``sources``.
+SOURCE_SPECS: List[SourceSpec] = build_source_specs()
 
 
 def normalize_chain_group(group: SequenceGroup) -> str:
@@ -166,54 +139,27 @@ def _prepare_db(con: duckdb.DuckDBPyConnection):
   )
 
 
-def _insert_source_rows(con: duckdb.DuckDBPyConnection, spec: SourceSpec):
-  """Normalize and insert all rows produced by one registered source.
+_INSERT_COLUMNS = ["source", "group1", "group2", "interaction_label", "affinity_nm", "affinity_pkd"]
 
-  Each yielded entry is validated, canonicalized, and converted into the
-  database schema before any insertion happens. Invalid rows are skipped with a
-  diagnostic message rather than aborting the whole aggregation run. After the
-  rows are materialized into a temporary DataFrame, they are inserted with an
-  `ON CONFLICT DO NOTHING` policy on the canonical pair key.
+# Rows are inserted in bounded chunks so a single large source (e.g. IntAct,
+# which yields millions of rows) never materializes its full row set in memory.
+INSERT_CHUNK_SIZE = 50_000
 
-  Because sources are processed in the order they appear in `SOURCE_SPECS`,
-  earlier sources take precedence when multiple datasets contain the same
-  canonicalized pair. This gives the registry a simple, explicit source-quality
-  priority mechanism without needing per-row merge logic.
+
+def _flush_chunk(con: duckdb.DuckDBPyConnection, buffer: List[tuple]) -> int:
+  """Insert one buffered chunk of canonicalized rows, returning rows inserted.
+
+  Deduplication against already-present pairs is handled by the table's
+  `ON CONFLICT(group1, group2) DO NOTHING` policy, so chunk boundaries do not
+  affect the final result: a pair seen in an earlier chunk (or an earlier,
+  higher-priority source) is skipped here. The number inserted is measured as
+  the change in table size, which naturally accounts for both cross-chunk and
+  intra-chunk duplicates.
   """
-  inserted_rows = []
-  skipped_invalid = 0
-  skipped_duplicates = 0
+  if not buffer:
+    return 0
 
-  for entry in spec.loader():
-    try:
-      group1, group2 = canonicalize_pair(entry.group1, entry.group2)
-      affinity_nm = None if entry.affinity_nm is None else float(entry.affinity_nm)
-      interaction_label = _coerce_interaction_label(entry.interaction_label, affinity_nm)
-      affinity_pkd = affinity_nm_to_pkd(affinity_nm)
-    except Exception as exc:
-      skipped_invalid += 1
-      print(f"Source={spec.name} skipped_invalid_entry error={exc}")
-      continue
-
-    inserted_rows.append(
-      (
-        entry.source or spec.name,
-        group1,
-        group2,
-        interaction_label,
-        affinity_nm,
-        affinity_pkd,
-      )
-    )
-
-  if not inserted_rows:
-    print(f"Source={spec.name} inserted=0 skipped_invalid={skipped_invalid} skipped_duplicate={skipped_duplicates}")
-    return
-
-  df = pd.DataFrame(
-    inserted_rows,
-    columns=["source", "group1", "group2", "interaction_label", "affinity_nm", "affinity_pkd"],
-  )
+  df = pd.DataFrame(buffer, columns=_INSERT_COLUMNS)
   con.register("source_rows", df)
   try:
     before = con.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
@@ -229,8 +175,50 @@ def _insert_source_rows(con: duckdb.DuckDBPyConnection, spec: SourceSpec):
   finally:
     con.unregister("source_rows")
 
-  inserted = after - before
-  skipped_duplicates = len(inserted_rows) - inserted
+  return after - before
+
+
+def _insert_source_rows(con: duckdb.DuckDBPyConnection, spec: SourceSpec):
+  """Normalize and insert all rows produced by one registered source.
+
+  Each yielded entry is validated, canonicalized, and converted into the
+  database schema, then buffered and flushed in fixed-size chunks (see
+  `INSERT_CHUNK_SIZE`) with an `ON CONFLICT DO NOTHING` policy on the canonical
+  pair key. Streaming in chunks keeps memory bounded regardless of source size.
+  Invalid rows are skipped with a diagnostic message rather than aborting the
+  whole aggregation run.
+
+  Because sources are processed in the order they appear in `SOURCE_SPECS`,
+  earlier sources take precedence when multiple datasets contain the same
+  canonicalized pair. This gives the registry a simple, explicit source-quality
+  priority mechanism without needing per-row merge logic.
+  """
+  buffer: List[tuple] = []
+  valid_rows = 0
+  inserted = 0
+  skipped_invalid = 0
+
+  for entry in spec.loader():
+    try:
+      group1, group2 = canonicalize_pair(entry.group1, entry.group2)
+      affinity_nm = None if entry.affinity_nm is None else float(entry.affinity_nm)
+      interaction_label = _coerce_interaction_label(entry.interaction_label, affinity_nm)
+      affinity_pkd = affinity_nm_to_pkd(affinity_nm)
+    except Exception as exc:
+      skipped_invalid += 1
+      print(f"Source={spec.name} skipped_invalid_entry error={exc}")
+      continue
+
+    buffer.append((entry.source or spec.name, group1, group2, interaction_label, affinity_nm, affinity_pkd))
+    valid_rows += 1
+
+    if len(buffer) >= INSERT_CHUNK_SIZE:
+      inserted += _flush_chunk(con, buffer)
+      buffer.clear()
+
+  inserted += _flush_chunk(con, buffer)
+
+  skipped_duplicates = valid_rows - inserted
   print(f"Source={spec.name} inserted={inserted} skipped_invalid={skipped_invalid} skipped_duplicate={skipped_duplicates}")
 
 

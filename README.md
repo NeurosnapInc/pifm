@@ -383,6 +383,145 @@ Binary interaction labels
 
 ---
 
+# Data Sources & Downloads
+
+Aggregation is source-driven. Each dataset has a loader in the `sources/`
+package that yields `InteractionEntry` objects; loaders are registered (in
+priority order) by `sources.build_source_specs()` and consumed by
+`aggregate_data.py`.
+
+**All raw downloads go under `./data/raw/<source>/`** (git-ignored). Loaders are
+defensive: if their files are absent they print a download hint and yield
+nothing, so `python aggregate_data.py` always runs. Once data is present, run:
+
+```bash
+python aggregate_data.py            # writes data/aggregated/aggregated.duckdb
+duckdb data/aggregated/aggregated.duckdb -ui   # inspect
+```
+
+## Sequence resolution (required for Negatome / IntAct / DIP)
+
+These sources distribute interactions as **UniProt accession pairs**, not
+sequences. Provide one or more UniProt FASTA files in `data/raw/uniprot/` and
+the loaders resolve accessions locally (no network calls); unresolved
+accessions are skipped. Swiss-Prot is a good default:
+
+```bash
+mkdir -p data/raw/uniprot
+wget -P data/raw/uniprot \
+  https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
+```
+
+## Registered sources
+
+| Source | Labels | Pos/Neg | Download |
+|---|---|---|---|
+| SKEMPI v2.0 | affinity | positive | free (~32 MB) |
+| IntAct | binary | positive | free (FTP) |
+| DIP | binary | positive | **free login required** |
+| Negatome 2.0 | binary | **negative** | free |
+| STRING (filtered) | binary | positive | free (per species) |
+| literature-derived | affinity (+optional binary) | user-defined | user-provided CSV |
+
+### SKEMPI v2.0 (protein–protein affinities, wild-type + mutants, positives)
+
+SKEMPI's CSV contains no sequences — only PDB ids + chains — so the loader
+reconstructs chain sequences from the bundled cleaned PDB structures (ATOM
+records) and applies each cleaned point mutation to produce the mutant complex.
+Both the CSV and the PDB bundle are required:
+
+```bash
+mkdir -p data/raw/skempi
+wget -O data/raw/skempi/skempi_v2.csv \
+  https://life.bsc.es/pid/skempi2/database/download/skempi_v2.csv
+wget -O data/raw/skempi/SKEMPI2_PDBs.tgz \
+  https://life.bsc.es/pid/skempi2/database/download/SKEMPI2_PDBs.tgz
+tar -xzf data/raw/skempi/SKEMPI2_PDBs.tgz -C data/raw/skempi   # -> data/raw/skempi/PDBs/
+```
+
+Yields ~348 wild-type complexes and ~7,000 mutant complexes (Kd → pKd). Both
+wild-type and mutants are labeled positive (SKEMPI only records complexes that
+form). Rows whose mutation numbering does not match the structure are skipped.
+
+### IntAct (physical PPIs, positives)
+
+```bash
+mkdir -p data/raw/intact
+wget -O data/raw/intact/intact.txt \
+  https://ftp.ebi.ac.uk/pub/databases/intact/current/psimitab/intact.txt
+```
+
+Loader keeps physical/direct interactions (MI:0915 / MI:0407 / MI:0914) between
+two UniProt accessions with MI-score ≥ 0.40.
+
+### Negatome 2.0 (non-interacting pairs, the only negatives)
+
+```bash
+mkdir -p data/raw/negatome
+wget -P data/raw/negatome \
+  https://mips.helmholtz-muenchen.de/proj/ppi/negatome/combined_stringent.txt
+```
+
+The `combined_stringent` list excludes pairs seen interacting in IntAct, making
+it the safest negative set.
+
+### DIP (curated physical PPIs, positives — manual download)
+
+DIP requires a free account. Log in, download the full PSI-MITAB export from
+<https://dip.doe-mbi.ucla.edu/dip/Download.cgi>, and save it as:
+
+```
+data/raw/dip/dip.txt
+```
+
+### STRING (functional associations, positives — filter carefully)
+
+Download **per species** (physical subnetwork + matching sequences). The loader
+keeps edges with combined score ≥ 700 **and** nonzero experimental/database
+evidence, and ships its own sequences so no UniProt map is needed.
+
+```bash
+mkdir -p data/raw/string
+# Example: E. coli K-12 (taxid 511145). Repeat for each species you want.
+BASE=https://stringdb-downloads.org/download
+wget -P data/raw/string $BASE/protein.physical.links.detailed.v12.0/511145.protein.physical.links.detailed.v12.0.txt.gz
+wget -P data/raw/string $BASE/protein.sequences.v12.0/511145.protein.sequences.v12.0.fa.gz
+```
+
+### Literature-derived affinity (user-provided)
+
+No canonical download. Drop CSVs into `data/raw/literature/` with a header row:
+
+```csv
+seq1,seq2,affinity_nm,interaction_label
+MKT...,MSD...,12.5,
+MGH...,MSD...,,1
+```
+
+`seq1`/`seq2` are amino-acid sequences (use a `:`-delimited value for a
+multi-chain side). `affinity_nm` (Kd in nM) and `interaction_label` (`1`/`0`)
+are optional; rows with neither default to a positive interaction.
+
+## Deferred: protein–ligand sources (pending molecule modality)
+
+**BioLiP** (and other protein–small-molecule sets such as BindingDB/PDBbind) are
+**not registered**. The current `InteractionEntry` contract and `tokenize_data.py`
+accept **amino-acid sequences only** — every group member is fed to ProstT5 as a
+protein. Emitting SMILES ligands would be silently tokenized as amino acids.
+These sources should be wired in only after a molecule modality is added to the
+contract. (A protein–peptide subset of BioLiP, where the ligand is a peptide
+sequence, could be extracted for the sequence pipeline in the meantime.)
+
+## Adding a new source
+
+1. Add `sources/<name>.py` with `def iter_<name>() -> Iterator[InteractionEntry]`
+   (yield **sequences only**; set `interaction_label` and/or `affinity_nm`).
+2. Register a `SourceSpec` in `sources.build_source_specs()` — list position sets
+   priority (earlier wins on duplicate canonical pairs).
+3. Document its download here, targeting `./data/raw/<name>/`.
+
+---
+
 # Inference Workflow
 
 ```
