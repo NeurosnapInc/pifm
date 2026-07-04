@@ -41,6 +41,12 @@ class SourceSpec:
 
 
 def _empty_loader() -> Iterable[InteractionEntry]:
+  """Provide a no-op source loader placeholder.
+
+  This is only here so the file has a valid example loader shape before any
+  real data sources are registered. It returns an empty iterable and does not
+  perform any I/O or validation.
+  """
   return []
 
 
@@ -53,6 +59,19 @@ SOURCE_SPECS: List[SourceSpec] = [
 
 
 def normalize_chain_group(group: SequenceGroup) -> str:
+  """Convert one interaction-side group into its canonical serialized form.
+
+  The aggregation layer needs a stable representation for each side of a
+  protein complex so deduplication does not depend on how an upstream source
+  happened to order chains. This helper accepts either a pre-delimited string
+  or an iterable of raw amino-acid sequences, strips empty items, uppercases
+  all sequences, sorts them alphabetically, and joins them with `":"`.
+
+  The result is the only group representation that should be written to the
+  database or used for downstream comparisons. If the incoming value contains
+  no usable sequences after cleanup, the row is treated as invalid and the
+  caller should skip it.
+  """
   if isinstance(group, str):
     parts = [part.strip().upper() for part in group.split(":") if part.strip()]
   else:
@@ -65,12 +84,35 @@ def normalize_chain_group(group: SequenceGroup) -> str:
 
 
 def canonicalize_pair(group1: SequenceGroup, group2: SequenceGroup) -> Tuple[str, str]:
+  """Canonicalize a two-sided interaction pair into an order-invariant key.
+
+  The model still distinguishes the partition between the two sides of the
+  interaction, so each group is preserved as its own normalized unit. What is
+  intentionally removed is the arbitrary top-level ordering between those two
+  units. After each side is normalized independently, the pair itself is sorted
+  so that `(A:B, C:D)` and `(C:D, A:B)` become the same canonical database key.
+
+  This preserves bipartite structure while preventing duplicate rows caused
+  purely by source-specific left/right ordering conventions.
+  """
   normalized = [normalize_chain_group(group1), normalize_chain_group(group2)]
   normalized.sort()
   return normalized[0], normalized[1]
 
 
 def affinity_nm_to_pkd(affinity_nm: Optional[float]) -> Optional[float]:
+  """Convert an affinity measurement from nanomolar units into pKd space.
+
+  The raw sources may provide affinity in nM, but the training pipeline is
+  expected to operate on a log-scale target because it is numerically better
+  behaved and aligns more naturally with standard biochemical conventions.
+  This helper applies the identity `pKd = 9 - log10(Kd_nM)`, which is
+  equivalent to `-log10(Kd_M)`.
+
+  Missing affinity values remain missing so the regression task can be masked
+  cleanly downstream. Non-positive affinity values are rejected because the
+  logarithm would be invalid and such rows indicate a broken source record.
+  """
   if affinity_nm is None:
     return None
 
@@ -81,12 +123,33 @@ def affinity_nm_to_pkd(affinity_nm: Optional[float]) -> Optional[float]:
 
 
 def _coerce_interaction_label(value: Optional[bool], affinity_nm: Optional[float]) -> Optional[float]:
+  """Map a source interaction label into the numeric format used by training.
+
+  The output is stored as a float so it is immediately compatible with the rest
+  of the aggregation and tokenization flow, which treats labels generically
+  before task-specific casting. At the moment, rows that do not explicitly
+  provide a binary label are assumed to be positive observations. That matches
+  the current project assumption that curated source entries represent known
+  interactions unless a source explicitly contributes negatives.
+
+  If that assumption changes later, this is the single place where the default
+  interaction-label policy should be tightened.
+  """
   if value is None:
     return 1.0
   return 1.0 if bool(value) else 0.0
 
 
 def _prepare_db(con: duckdb.DuckDBPyConnection):
+  """Recreate the target DuckDB schema from scratch.
+
+  Aggregation is designed to be deterministic and rerunnable, so this function
+  drops any existing `samples` table and creates a fresh one with the canonical
+  columns expected by the rest of the project. The uniqueness constraint is
+  intentionally applied to `(group1, group2)` only, after canonicalization, so
+  duplicate source rows cannot survive just because their original order
+  differed.
+  """
   con.execute("DROP TABLE IF EXISTS samples")
   con.execute(
     """
@@ -104,6 +167,19 @@ def _prepare_db(con: duckdb.DuckDBPyConnection):
 
 
 def _insert_source_rows(con: duckdb.DuckDBPyConnection, spec: SourceSpec):
+  """Normalize and insert all rows produced by one registered source.
+
+  Each yielded entry is validated, canonicalized, and converted into the
+  database schema before any insertion happens. Invalid rows are skipped with a
+  diagnostic message rather than aborting the whole aggregation run. After the
+  rows are materialized into a temporary DataFrame, they are inserted with an
+  `ON CONFLICT DO NOTHING` policy on the canonical pair key.
+
+  Because sources are processed in the order they appear in `SOURCE_SPECS`,
+  earlier sources take precedence when multiple datasets contain the same
+  canonicalized pair. This gives the registry a simple, explicit source-quality
+  priority mechanism without needing per-row merge logic.
+  """
   inserted_rows = []
   skipped_invalid = 0
   skipped_duplicates = 0
@@ -159,6 +235,13 @@ def _insert_source_rows(con: duckdb.DuckDBPyConnection, spec: SourceSpec):
 
 
 def _print_dataset_audit(con: duckdb.DuckDBPyConnection):
+  """Print a high-level audit summary for the aggregated dataset.
+
+  The goal is not exhaustive reporting, just a fast sanity check after an
+  aggregation run. The summary makes it easy to confirm that rows were loaded,
+  multiple sources were seen when expected, and both interaction and affinity
+  supervision are present at nonzero counts.
+  """
   row = con.execute(
     """
     SELECT
@@ -178,6 +261,14 @@ def _print_dataset_audit(con: duckdb.DuckDBPyConnection):
 
 
 def aggregate(source_specs: Sequence[SourceSpec], out_db: Path):
+  """Build the aggregated DuckDB file from the registered source list.
+
+  This is the main orchestration entrypoint for data aggregation. It creates the
+  output directory if needed, recreates the target schema, processes each source
+  in registry order, and finally prints a compact audit of the resulting table.
+  The output database is self-contained and intended to be the single handoff
+  artifact consumed by tokenization and downstream training scripts.
+  """
   out_db.parent.mkdir(parents=True, exist_ok=True)
   con = duckdb.connect(out_db.as_posix())
   try:
@@ -192,12 +283,23 @@ def aggregate(source_specs: Sequence[SourceSpec], out_db: Path):
 
 
 def _parse_args():
+  """Parse command-line options for the aggregation CLI.
+
+  The current interface is intentionally minimal because source registration is
+  code-driven rather than command-line driven. At the moment the only runtime
+  option is the destination path for the aggregated DuckDB file.
+  """
   parser = argparse.ArgumentParser(description="Aggregate interaction-group datasets into DuckDB.")
   parser.add_argument("--out-db", default="data/aggregated/aggregated.duckdb", help="Output DuckDB path.")
   return parser.parse_args()
 
 
 def main():
+  """Run the aggregation CLI using the currently registered sources.
+
+  This thin wrapper exists so the module can be used both as a script and as an
+  importable library entrypoint without duplicating setup logic.
+  """
   args = _parse_args()
   aggregate(SOURCE_SPECS, Path(args.out_db))
 
