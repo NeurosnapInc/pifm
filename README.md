@@ -359,7 +359,6 @@ Advantages:
 
 Potential data sources include:
 
-- PDBbind
 - BindingDB
 - SKEMPI
 - BioLiP
