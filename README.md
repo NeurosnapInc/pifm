@@ -359,7 +359,6 @@ Advantages:
 
 Potential data sources include:
 
-- BindingDB
 - SKEMPI
 - BioLiP
 - Negatome
