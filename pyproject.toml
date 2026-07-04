@@ -25,14 +25,15 @@ dependencies = [
   "sentencepiece",
   "duckdb",
   "neurosnap",
+  "numpy",
+  "pandas",
+  "scikit-learn",
+  "tqdm",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "datasets",
   "plotly",
-  "scikit-learn",
-  "tqdm",
   "ruff",
   "tiktoken",
   "protobuf",
@@ -43,7 +44,7 @@ Homepage = "https://github.com/NeurosnapInc/pifm"
 Issues = "https://github.com/NeurosnapInc/pifm/issues"
 
 [tool.setuptools]
-py-modules = ["aggregate_data", "calibration", "config", "ensemble_validate", "inference", "model", "tokenize_data", "train", "validate"]
+py-modules = ["aggregate_data", "calibration", "config", "model", "tokenize_data", "train", "validate"]
 
 [tool.ruff]
 line-length = 150

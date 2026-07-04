@@ -1,0 +1,42 @@
+from pathlib import Path
+
+### Backbone
+MODEL_NAME = "Rostlab/ProstT5"
+GLOBAL_SEED = 1
+
+### Aggregation
+AGGREGATED_DB_PATH = Path("data/aggregated/aggregated.duckdb")
+
+### Split Settings
+SPLIT_SEED = GLOBAL_SEED
+TRAIN_FRACTION = 0.8
+VAL_FRACTION = 0.1
+TEST_FRACTION = 0.1
+
+### Tokenization
+MAX_LENGTH = 1024 * 2
+TOKENIZED_DATA_DIR = Path("data/tokenized")
+TRAIN_CACHE_PATH = TOKENIZED_DATA_DIR / "multitask_group_pair_prostt5_tokens.pt"
+
+### Optimization
+BATCH_SIZE = 8
+LR = 1e-4
+EPOCHS = 10
+WEIGHT_DECAY = 1e-2
+WARMUP_RATIO = 0.05
+PATIENCE = 3
+TRAINING_SEED = GLOBAL_SEED
+BATCH_SAMPLER_SEED = GLOBAL_SEED
+
+### Architecture
+ADAPTER_DIM = 64
+DROPOUT = 0.1
+RESIDUE_POOL_HIDDEN = 256
+GROUP_POOL_HIDDEN = 256
+PAIR_MLP_HIDDEN = 512
+CLASSIFICATION_HEAD_HIDDEN = 256
+REGRESSION_HEAD_HIDDEN = 512
+
+### Token-Capped Batching
+TRAIN_MAX_TOKENS_PER_BATCH = 24576
+EVAL_MAX_TOKENS_PER_BATCH = 32768
