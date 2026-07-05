@@ -33,6 +33,9 @@ class InteractionEntry:
   protein sequence, so non-protein modalities (e.g. SMILES ligands) must not be
   emitted here until a molecule modality is added to the pipeline.
 
+  Source loaders should provide Kd-like affinity measurements in nanomolar via
+  ``affinity_nm``. The aggregation layer converts this source-facing unit into
+  standardized ``affinity_pkd`` before writing the canonical DuckDB table.
   Exactly one of ``affinity_nm`` / ``interaction_label`` is required in practice,
   but both may be provided when a source carries both kinds of supervision.
   """

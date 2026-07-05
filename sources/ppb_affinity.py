@@ -1,4 +1,9 @@
-"""PPB-Affinity source loader."""
+"""PPB-Affinity source loader.
+
+The source CSV exposes dissociation constants as `KD(M)`, i.e. Kd in molar
+units. This loader converts those values to nM; aggregation then standardizes
+them to pKd in the canonical DuckDB table.
+"""
 
 import csv
 from pathlib import Path

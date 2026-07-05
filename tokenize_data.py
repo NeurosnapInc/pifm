@@ -191,7 +191,7 @@ try:
       task_order.append(task_name)
 
   if not task_order:
-    raise ValueError("No supervised labels found. Populate interaction_label and/or affinity_nm before tokenization.")
+    raise ValueError("No supervised labels found. Populate interaction_label and/or affinity_pkd before tokenization.")
 
   task_metas = {task_name: TASK_SPECS[task_name] for task_name in task_order}
   task_to_idx = {task_name: idx for idx, task_name in enumerate(task_order)}

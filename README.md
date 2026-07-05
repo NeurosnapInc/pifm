@@ -300,14 +300,10 @@ Advantages:
 - Handles noisy affinity labels better
 
 ## Data Sources & Downloads
-Aggregation is source-driven. Each dataset has a loader in the `sources/`
-package that yields `InteractionEntry` objects; loaders are registered (in
-priority order) by `sources.build_source_specs()` and consumed by
-`aggregate_data.py`.
+Aggregation is source-driven. Each dataset has a loader in the `sources/` package that yields `InteractionEntry` objects; loaders are registered (in
+priority order) by `sources.build_source_specs()` and consumed by `aggregate_data.py`.
 
-Raw downloads live under `./data/raw/` (git-ignored). Loaders are defensive: if
-their files are absent they print a download hint and yield nothing, so
-`python aggregate_data.py` always runs.
+Raw downloads live under `./data/raw/` (git-ignored). Loaders are defensive: if their files are absent they print a download hint and yield nothing, so `python aggregate_data.py` always runs.
 
 Prepare the raw data directory:
 
@@ -316,18 +312,13 @@ mkdir -p data/raw
 ```
 
 Once data is present, run:
-
 ```bash
 python aggregate_data.py            # writes data/aggregated/aggregated.duckdb
 duckdb data/aggregated/aggregated.duckdb -ui   # inspect
 ```
 
 ### Sequence resolution (required for Negatome / DIP)
-These sources distribute interactions as **UniProt accession pairs**, not
-sequences. Provide one or more UniProt FASTA files in `data/raw/uniprot/` and
-the loaders resolve accessions locally (no network calls); unresolved
-accessions are skipped. Swiss-Prot is a good default:
-
+These sources distribute interactions as **UniProt accession pairs**, not sequences. Provide one or more UniProt FASTA files in `data/raw/uniprot/` and the loaders resolve accessions locally (no network calls); unresolved accessions are skipped. Swiss-Prot is a good default:
 ```bash
 mkdir -p data/raw/uniprot
 wget -P data/raw/uniprot https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
@@ -346,8 +337,9 @@ wget -P data/raw/uniprot https://ftp.uniprot.org/pub/databases/uniprot/current_r
 
 ### PPB-Affinity filtered (protein–protein affinities, positives)
 The filtered PPB-Affinity CSV provides pre-extracted `Ligand Sequences`,
-`Receptor Sequences`, and `KD(M)` columns. Download it directly into the path
-expected by the loader:
+`Receptor Sequences`, and `KD(M)` columns. `KD(M)` is Kd in molar units; the
+loader converts it to nM and the aggregator stores the standardized pKd target.
+Download it directly into the path expected by the loader:
 
 ```bash
 wget -O data/raw/ppb_affinity_filtered.csv https://huggingface.co/datasets/proteinea/ppb_affinity/resolve/main/filtered.csv
@@ -364,7 +356,9 @@ wget -O data/raw/skempi_v2.csv https://life.bsc.es/pid/skempi2/database/download
 curl -L https://life.bsc.es/pid/skempi2/database/download/SKEMPI2_PDBs.tgz | tar -xz -C data/raw   # -> data/raw/PDBs/
 ```
 
-Yields ~348 wild-type complexes and ~7,000 mutant complexes (Kd → pKd). Both
+Yields ~348 wild-type complexes and ~7,000 mutant complexes. The
+`Affinity_wt_parsed` and `Affinity_mut_parsed` columns are Kd in molar units;
+the loader converts them to nM and the aggregator stores standardized pKd. Both
 wild-type and mutants are labeled positive (SKEMPI only records complexes that
 form). Rows whose mutation numbering does not match the structure are skipped.
 
@@ -417,7 +411,8 @@ MGH...,MSD...,,1
 
 `seq1`/`seq2` are amino-acid sequences (use a `:`-delimited value for a
 multi-chain side). `affinity_nm` (Kd in nM) and `interaction_label` (`1`/`0`)
-are optional; rows with neither default to a positive interaction.
+are optional; rows with neither default to a positive interaction. The canonical
+DuckDB table stores only the standardized `affinity_pkd` value, not raw nM.
 
 ## Deferred: protein–ligand sources (pending molecule modality)
 **BioLiP** (and other protein–small-molecule sets such as BindingDB/PDBbind) are

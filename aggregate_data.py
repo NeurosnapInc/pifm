@@ -20,7 +20,7 @@ from sources import build_source_specs
 
 
 INSERT_CHUNK_SIZE = 50_000
-INSERT_COLUMNS = ["source", "group1", "group2", "interaction_label", "affinity_nm", "affinity_pkd"]
+INSERT_COLUMNS = ["source", "group1", "group2", "interaction_label", "affinity_pkd"]
 
 
 # Source priority is defined by list order. Earlier sources win if multiple
@@ -53,7 +53,11 @@ def canonicalize_pair(group1: SequenceGroup, group2: SequenceGroup) -> Tuple[str
 
 
 def affinity_nm_to_pkd(affinity_nm: Optional[float]) -> Optional[float]:
-  """Convert a Kd measurement from nanomolar units into pKd space."""
+  """Convert a Kd measurement from nanomolar units into pKd space.
+
+  pKd is defined as `-log10(Kd_M)`. Because `Kd_M = Kd_nM * 1e-9`, the
+  equivalent conversion from nM is `pKd = 9 - log10(Kd_nM)`.
+  """
   if affinity_nm is None:
     return None
 
@@ -80,7 +84,6 @@ def _prepare_db(con: duckdb.DuckDBPyConnection):
       group1 VARCHAR NOT NULL,
       group2 VARCHAR NOT NULL,
       interaction_label DOUBLE,
-      affinity_nm DOUBLE,
       affinity_pkd DOUBLE,
       CONSTRAINT samples_group_pair_unique UNIQUE(group1, group2)
     )
@@ -99,8 +102,8 @@ def _flush_chunk(con: duckdb.DuckDBPyConnection, rows: List[tuple]) -> int:
     before = con.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
     con.execute(
       """
-      INSERT INTO samples(source, group1, group2, interaction_label, affinity_nm, affinity_pkd)
-      SELECT source, group1, group2, interaction_label, affinity_nm, affinity_pkd
+      INSERT INTO samples(source, group1, group2, interaction_label, affinity_pkd)
+      SELECT source, group1, group2, interaction_label, affinity_pkd
       FROM source_rows
       ON CONFLICT(group1, group2) DO NOTHING
       """
@@ -135,7 +138,7 @@ def _insert_source_rows(con: duckdb.DuckDBPyConnection, spec: SourceSpec):
       print(f"Source={spec.name} skipped_invalid_entry error={exc}", flush=True)
       continue
 
-    buffer.append((entry.source or spec.name, group1, group2, interaction_label, affinity_nm, affinity_pkd))
+    buffer.append((entry.source or spec.name, group1, group2, interaction_label, affinity_pkd))
     valid_rows += 1
 
     if len(buffer) >= INSERT_CHUNK_SIZE:

@@ -15,9 +15,10 @@ For each CSV row we emit:
   - each mutant complex, with its point mutation(s) applied to the wild-type
     chain sequences (with ``Affinity_mut``).
 
-Affinities are Kd in molar units; they are converted to nM (``* 1e9``) for the
-aggregation layer's ``pKd`` conversion. Both wild-type and mutant complexes are
-labeled as positive interactions (SKEMPI only contains complexes that form).
+Affinities are Kd in molar units in the ``Affinity_*_parsed`` columns; they are
+converted to nM (``* 1e9``) for the aggregation layer's standardized pKd
+conversion. Both wild-type and mutant complexes are labeled as positive
+interactions (SKEMPI only contains complexes that form).
 
 Download + extract:
   data/raw/skempi_v2.csv                    (semicolon-delimited)
