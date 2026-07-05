@@ -381,6 +381,67 @@ vs
 
 Binary interaction labels
 
+
+Two curated sources are currently supported:
+
+- **PPB‑Affinity (filtered)** – a comprehensive dataset of crystal structures of protein–protein complexes, including binding affinities, receptor chains, and ligand chains. It is the largest publicly available PPB dataset, combining receptor protein chain, ligand protein chain, and experimentally measured affinity values.
+- **SKEMPI v2.0** – a database of binding free‑energy and kinetic changes upon mutation for protein–protein interactions with solved structures. Version 2.0 contains data for 7,085 mutations, recording thermodynamic parameters, kinetic rate constants, and, where available, cleaned crystal structures of the complexes.
+
+These sources were chosen because they provide sequence‑resolvable protein chains and measured affinities, which map naturally to the `group1`/`group2` schema used by the aggregation pipeline. Binary interaction labels are inferred to be positive for these curated datasets.
+
+## Data Directory Structure
+
+```
+data/
+├─ raw/          # input files downloaded from each source (see below)
+└─ aggregated/
+   └─ aggregated.duckdb  # database created by the aggregation script
+```
+
+All raw files must reside under `data/raw/` before running the aggregator.
+
+## Download Instructions
+
+### 1. Prepare the raw data directory
+
+Create the folder if it does not already exist:
+
+```bash
+mkdir -p data/raw
+```
+
+### 2. Get the PPB‑Affinity (filtered) dataset
+
+Go to the PPB‑Affinity dataset page on Hugging Face and download the file `filtered.csv` from the files → filtered section. Save it as:
+
+```
+data/raw/ppb_affinity_filtered.csv
+```
+
+This CSV provides pre‑extracted "Ligand Sequences" and "Receptor Sequences" columns, and a "KD(M)" column containing dissociation constants in molar units. If there are multiple chains on either side, the sequences are comma‑separated.
+
+### 3. Get the SKEMPI v2.0 dataset
+
+Visit the SKEMPI v2.0 website and follow the "Download" link to obtain two files:
+
+- `skempi_v2.csv` – contains affinities, mutation information, and PDB identifiers.
+- `SKEMPI2_PDBs.tgz` – a tarball of cleaned PDB structures.
+
+After downloading, place them in `data/raw/` with the following names:
+
+```
+data/raw/skempi_v2.csv
+data/raw/SKEMPI2_PDBs.tgz
+```
+
+Optional — unpack the PDB archive for inspection:
+
+```bash
+tar -xzf data/raw/SKEMPI2_PDBs.tgz -C data/raw
+```
+
+SKEMPI v2.0 contains data on thermodynamic parameters and kinetic rate constants for protein–protein interactions with solved structures, with a total of 7,085 mutation entries.
+
 ---
 
 # Inference Workflow

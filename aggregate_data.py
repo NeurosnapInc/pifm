@@ -13,13 +13,14 @@ Inspect results:
 
 import argparse
 import math
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 import duckdb
 import pandas as pd
 
+from sources.intact import iter_intact_entries
+from sources.source_types import InteractionEntry, SequenceGroup, SourceSpec
 
 # A group of chains may be a single colon-delimited string or a list of sequences
 SequenceGroup = Union[str, Sequence[str]]
@@ -45,6 +46,8 @@ class InteractionEntry:
 @dataclass(frozen=True)
 class SourceSpec:
     """Specification for registering a new data source.
+
+SOURCE_INSERT_BATCH_SIZE = 5_000
 
     The name is a human‑readable identifier and the loader is a callable that
     yields `InteractionEntry` objects for each record in the dataset.
@@ -246,6 +249,7 @@ SOURCE_SPECS: List[SourceSpec] = [
     SourceSpec(name="skempi_v2", loader=iter_skempi_rows),
     # Example for future datasets:
     # SourceSpec(name="bindingdb_curated", loader=iter_bindingdb_rows),
+  SourceSpec(name="intact", loader=lambda: iter_intact_entries()),
 ]
 
 
@@ -433,6 +437,83 @@ def _insert_source_rows(con: duckdb.DuckDBPyConnection, spec: SourceSpec):
         f"Source={spec.name} inserted={inserted} "
         f"skipped_invalid={skipped_invalid} skipped_duplicate={skipped_duplicates}"
     )
+  """Normalize and insert all rows produced by one registered source.
+
+  Each yielded entry is validated, canonicalized, and converted into the
+  database schema before any insertion happens. Invalid rows are skipped with a
+  diagnostic message rather than aborting the whole aggregation run. After the
+  rows are materialized into a temporary DataFrame, they are inserted with an
+  `ON CONFLICT DO NOTHING` policy on the canonical pair key.
+
+  Because sources are processed in the order they appear in `SOURCE_SPECS`,
+  earlier sources take precedence when multiple datasets contain the same
+  canonicalized pair. This gives the registry a simple, explicit source-quality
+  priority mechanism without needing per-row merge logic.
+  """
+  pending_rows = []
+  skipped_invalid = 0
+  skipped_duplicates = 0
+  inserted_total = 0
+  processed_total = 0
+
+  def flush_pending_rows():
+    nonlocal inserted_total, skipped_duplicates
+    if not pending_rows:
+      return
+
+    df = pd.DataFrame(
+      pending_rows,
+      columns=["source", "group1", "group2", "interaction_label", "affinity_nm", "affinity_pkd"],
+    )
+    con.register("source_rows", df)
+    try:
+      before = con.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
+      con.execute(
+        """
+        INSERT INTO samples(source, group1, group2, interaction_label, affinity_nm, affinity_pkd)
+        SELECT source, group1, group2, interaction_label, affinity_nm, affinity_pkd
+        FROM source_rows
+        ON CONFLICT(group1, group2) DO NOTHING
+        """
+      )
+      after = con.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
+    finally:
+      con.unregister("source_rows")
+
+    inserted = after - before
+    inserted_total += inserted
+    skipped_duplicates += len(pending_rows) - inserted
+    pending_rows.clear()
+
+  for entry in spec.loader():
+    try:
+      group1, group2 = canonicalize_pair(entry.group1, entry.group2)
+      affinity_nm = None if entry.affinity_nm is None else float(entry.affinity_nm)
+      interaction_label = _coerce_interaction_label(entry.interaction_label, affinity_nm)
+      affinity_pkd = affinity_nm_to_pkd(affinity_nm)
+    except Exception as exc:
+      skipped_invalid += 1
+      print(f"Source={spec.name} skipped_invalid_entry error={exc}", flush=True)
+      continue
+
+    pending_rows.append(
+      (
+        entry.source or spec.name,
+        group1,
+        group2,
+        interaction_label,
+        affinity_nm,
+        affinity_pkd,
+      )
+    )
+    processed_total += 1
+
+    if len(pending_rows) >= SOURCE_INSERT_BATCH_SIZE:
+      flush_pending_rows()
+      print(f"Source={spec.name} processed={processed_total} inserted={inserted_total} skipped_duplicate={skipped_duplicates}", flush=True)
+
+  flush_pending_rows()
+  print(f"Source={spec.name} inserted={inserted_total} skipped_invalid={skipped_invalid} skipped_duplicate={skipped_duplicates}", flush=True)
 
 
 def _print_dataset_audit(con: duckdb.DuckDBPyConnection):
@@ -481,6 +562,36 @@ def aggregate(source_specs: Sequence[SourceSpec], out_db: Path):
         _print_dataset_audit(con)
     finally:
         con.close()
+  ).fetchone()
+  total_rows, total_sources, interaction_labels, affinity_labels = row
+  print(
+    "Dataset audit "
+    f"rows={total_rows} sources={total_sources} "
+    f"interaction_labels={interaction_labels} affinity_labels={affinity_labels}",
+    flush=True,
+  )
+
+
+def aggregate(source_specs: Sequence[SourceSpec], out_db: Path):
+  """Build the aggregated DuckDB file from the registered source list.
+
+  This is the main orchestration entrypoint for data aggregation. It creates the
+  output directory if needed, recreates the target schema, processes each source
+  in registry order, and finally prints a compact audit of the resulting table.
+  The output database is self-contained and intended to be the single handoff
+  artifact consumed by tokenization and downstream training scripts.
+  """
+  out_db.parent.mkdir(parents=True, exist_ok=True)
+  con = duckdb.connect(out_db.as_posix())
+  try:
+    _prepare_db(con)
+    for spec in source_specs:
+      _insert_source_rows(con, spec)
+    total = con.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
+    print(f"Aggregation complete: {total} rows written to {out_db}", flush=True)
+    _print_dataset_audit(con)
+  finally:
+    con.close()
 
 
 def _parse_args():
