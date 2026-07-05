@@ -251,12 +251,10 @@ Protein1 <CHAIN> Protein2 <CHAIN> Protein3
 fed directly into ProstT5.
 
 Advantages:
-
 - Simple
 - Minimal downstream architecture
 
 Potential disadvantages:
-
 - Chain ordering matters
 - Long complexes exceed context length
 - ProstT5 was not trained to interpret arbitrary chain delimiters
@@ -276,24 +274,19 @@ Train only:
 
 ### Phase 2
 Enable adapter training.
-
 Fine-tune:
-
 - LoRA
 - adapters
 
 while leaving the backbone frozen.
-
 This should improve performance while remaining lightweight.
 
 ### Multi-Task Learning
 Rather than training only affinity regression, jointly train:
-
 - interaction classification
 - affinity prediction
 
 Advantages:
-
 - Better regularization
 - Improved generalization
 - More useful embeddings
