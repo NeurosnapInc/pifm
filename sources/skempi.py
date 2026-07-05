@@ -20,8 +20,8 @@ aggregation layer's ``pKd`` conversion. Both wild-type and mutant complexes are
 labeled as positive interactions (SKEMPI only contains complexes that form).
 
 Download + extract:
-  data/raw/skempi/skempi_v2.csv                    (semicolon-delimited)
-  data/raw/skempi/PDBs/<PDBID>.pdb                 (from SKEMPI2_PDBs.tgz)
+  data/raw/skempi_v2.csv                    (semicolon-delimited)
+  data/raw/PDBs/<PDBID>.pdb                  (from SKEMPI2_PDBs.tgz)
 """
 
 import csv
@@ -34,8 +34,8 @@ from contract import InteractionEntry
 
 from ._common import RAW_DIR, hint_missing
 
-SKEMPI_CSV = RAW_DIR / "skempi" / "skempi_v2.csv"
-SKEMPI_PDB_DIR = RAW_DIR / "skempi" / "PDBs"
+SKEMPI_CSV = RAW_DIR / "skempi_v2.csv"
+SKEMPI_PDB_DIR = RAW_DIR / "PDBs"
 
 _THREE_TO_ONE = {
   "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
@@ -162,7 +162,7 @@ def iter_skempi() -> Iterator[InteractionEntry]:
     hint_missing(
       "skempi",
       SKEMPI_PDB_DIR,
-      "Download + extract SKEMPI2_PDBs.tgz from https://life.bsc.es/pid/skempi2/ into data/raw/skempi/PDBs/",
+      "Download SKEMPI2_PDBs.tgz and extract it with: tar -xzf data/raw/SKEMPI2_PDBs.tgz -C data/raw",
     )
     return
 

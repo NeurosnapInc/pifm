@@ -1,8 +1,9 @@
 """
 Shared helpers for dataset source loaders.
 
-All raw downloads live under ``data/raw/<source>/`` (see the README section
-"Data Sources & Downloads"). Loaders are defensive: when their expected files
+Raw downloads live under ``data/raw/`` (see the README section "Data Sources &
+Downloads"). Some source loaders use source-specific subdirectories when the
+source needs several files. Loaders are defensive: when their expected files
 are absent they print a short, actionable hint and yield nothing, so
 ``aggregate_data.py`` always runs end to end even before any data has been
 downloaded.
