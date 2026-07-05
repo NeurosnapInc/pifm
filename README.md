@@ -386,6 +386,7 @@ Two curated sources are currently supported:
 
 - **PPB‑Affinity (filtered)** – a comprehensive dataset of crystal structures of protein–protein complexes, including binding affinities, receptor chains, and ligand chains. It is the largest publicly available PPB dataset, combining receptor protein chain, ligand protein chain, and experimentally measured affinity values.
 - **SKEMPI v2.0** – a database of binding free‑energy and kinetic changes upon mutation for protein–protein interactions with solved structures. Version 2.0 contains data for 7,085 mutations, recording thermodynamic parameters, kinetic rate constants, and, where available, cleaned crystal structures of the complexes.
+- **IntAct** – a molecular interaction database used here via the bulk archive export. The loader reads the local ZIP file, parses positive and negative MITAB exports, and resolves interactor sequences from the bundled IntAct FASTA.
 
 These sources were chosen because they provide sequence‑resolvable protein chains and measured affinities, which map naturally to the `group1`/`group2` schema used by the aggregation pipeline. Binary interaction labels are inferred to be positive for these curated datasets.
 
@@ -441,6 +442,16 @@ tar -xzf data/raw/SKEMPI2_PDBs.tgz -C data/raw
 ```
 
 SKEMPI v2.0 contains data on thermodynamic parameters and kinetic rate constants for protein–protein interactions with solved structures, with a total of 7,085 mutation entries.
+
+### 4. Get the IntAct bulk archive
+
+Download the current IntAct bulk export from EBI and save it under `data/raw/` with the date-stamped filename expected by `config.py`:
+
+```bash
+wget -O data/raw/intact_all_2026_07_03.zip https://ftp.ebi.ac.uk/pub/databases/intact/current/all.zip
+```
+
+The IntAct loader expects this ZIP to contain the positive MITAB export, negative MITAB export, and bundled FASTA file used for sequence resolution.
 
 ---
 

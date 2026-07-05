@@ -6,7 +6,7 @@ GLOBAL_SEED = 1
 
 ### Aggregation
 AGGREGATED_DB_PATH = Path("data/aggregated/aggregated.duckdb")
-INTACT_ARCHIVE_PATH = Path("intact_all_2026_07_03.zip")
+INTACT_ARCHIVE_PATH = Path("data/raw/intact_all_2026_07_03.zip")
 INTACT_SPECIES_TAXID = "9606"
 INTACT_INTERACTOR_TYPES = ("protein", "peptide")
 INTACT_INTERACTION_TYPES = ("physical association", "direct interaction")
