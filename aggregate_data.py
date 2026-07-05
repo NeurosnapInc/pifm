@@ -14,11 +14,22 @@ Inspect results:
 import argparse
 import math
 from pathlib import Path
+from typing import List, Optional, Sequence, Tuple
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 import duckdb
 import pandas as pd
 
+# InteractionEntry / SourceSpec live in ``contract`` so source loaders can import
+# them without a circular dependency on this module. Re-exported here so existing
+# imports (``from aggregate_data import InteractionEntry``) keep working.
+from contract import InteractionEntry, SequenceGroup, SourceSpec  # noqa: F401
+from sources import build_source_specs
+
+
+# Source priority is defined by list order. Earlier sources win if multiple sources
+# provide the same canonicalized group pair. Registration lives in ``sources``.
+SOURCE_SPECS: List[SourceSpec] = build_source_specs()
 from sources.intact import iter_intact_entries
 from sources.ppb_affinity import iter_ppb_affinity_entries
 from sources.skempi import iter_skempi_entries
@@ -147,6 +158,62 @@ def _prepare_db(con: duckdb.DuckDBPyConnection):
       affinity_pkd DOUBLE,
       CONSTRAINT samples_group_pair_unique UNIQUE(group1, group2)
     )
+
+
+_INSERT_COLUMNS = ["source", "group1", "group2", "interaction_label", "affinity_nm", "affinity_pkd"]
+
+# Rows are inserted in bounded chunks so a single large source (e.g. IntAct,
+# which yields millions of rows) never materializes its full row set in memory.
+INSERT_CHUNK_SIZE = 50_000
+
+
+def _flush_chunk(con: duckdb.DuckDBPyConnection, buffer: List[tuple]) -> int:
+  """Insert one buffered chunk of canonicalized rows, returning rows inserted.
+
+  Deduplication against already-present pairs is handled by the table's
+  `ON CONFLICT(group1, group2) DO NOTHING` policy, so chunk boundaries do not
+  affect the final result: a pair seen in an earlier chunk (or an earlier,
+  higher-priority source) is skipped here. The number inserted is measured as
+  the change in table size, which naturally accounts for both cross-chunk and
+  intra-chunk duplicates.
+  """
+  if not buffer:
+    return 0
+
+  df = pd.DataFrame(buffer, columns=_INSERT_COLUMNS)
+  con.register("source_rows", df)
+  try:
+    before = con.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
+    con.execute(
+      """
+      INSERT INTO samples(source, group1, group2, interaction_label, affinity_nm, affinity_pkd)
+      SELECT source, group1, group2, interaction_label, affinity_nm, affinity_pkd
+      FROM source_rows
+      ON CONFLICT(group1, group2) DO NOTHING
+      """
+    )
+    after = con.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
+  finally:
+    con.unregister("source_rows")
+
+  return after - before
+
+
+def _insert_source_rows(con: duckdb.DuckDBPyConnection, spec: SourceSpec):
+    """Normalize and insert all rows produced by one registered source.
+
+    Each yielded entry is validated, canonicalized, and converted into the
+    database schema before any insertion happens.  Invalid rows are skipped
+    with a diagnostic message rather than aborting the whole aggregation run.
+    After the rows are materialized into a temporary DataFrame, they are
+    inserted with an ``ON CONFLICT DO NOTHING`` policy on the canonical pair
+    key.
+
+    Because sources are processed in the order they appear in
+    :data:`SOURCE_SPECS`, earlier sources take precedence when multiple
+    datasets contain the same canonicalized pair.  This gives the registry a
+    simple, explicit source‑quality priority mechanism without needing per‑row
+    merge logic.
     """
   )
 
@@ -155,6 +222,11 @@ def _insert_source_rows(con: duckdb.DuckDBPyConnection, spec: SourceSpec):
   """Normalize and insert all rows produced by one registered source.
 
   Each yielded entry is validated, canonicalized, and converted into the
+  database schema, then buffered and flushed in fixed-size chunks (see
+  `INSERT_CHUNK_SIZE`) with an `ON CONFLICT DO NOTHING` policy on the canonical
+  pair key. Streaming in chunks keeps memory bounded regardless of source size.
+  Invalid rows are skipped with a diagnostic message rather than aborting the
+  whole aggregation run.
   database schema before any insertion happens. Invalid rows are skipped with a
   diagnostic message rather than aborting the whole aggregation run. Rows are
   flushed in batches so large sources, such as IntAct, do not need to be fully
@@ -165,6 +237,10 @@ def _insert_source_rows(con: duckdb.DuckDBPyConnection, spec: SourceSpec):
   canonicalized pair. This gives the registry a simple, explicit source-quality
   priority mechanism without needing per-row merge logic.
   """
+  buffer: List[tuple] = []
+  valid_rows = 0
+  inserted = 0
+  skipped_invalid = 0
   pending_rows = []
   skipped_invalid = 0
   skipped_duplicates = 0
@@ -211,6 +287,17 @@ def _insert_source_rows(con: duckdb.DuckDBPyConnection, spec: SourceSpec):
       print(f"Source={spec.name} skipped_invalid_entry error={exc}", flush=True)
       continue
 
+    buffer.append((entry.source or spec.name, group1, group2, interaction_label, affinity_nm, affinity_pkd))
+    valid_rows += 1
+
+    if len(buffer) >= INSERT_CHUNK_SIZE:
+      inserted += _flush_chunk(con, buffer)
+      buffer.clear()
+
+  inserted += _flush_chunk(con, buffer)
+
+  skipped_duplicates = valid_rows - inserted
+  print(f"Source={spec.name} inserted={inserted} skipped_invalid={skipped_invalid} skipped_duplicate={skipped_duplicates}")
     pending_rows.append(
       (
         entry.source or spec.name,
