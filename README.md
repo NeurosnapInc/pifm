@@ -276,20 +276,6 @@ Evaluate:
 - [ ] Contrastive loss
 - [ ] Multi-task weighted losses
 
-### Evaluation Metrics
-Classification:
-- [ ] ROC-AUC
-- [ ] PR-AUC
-- [ ] F1
-- [ ] Accuracy
-
-Regression:
-- [ ] Pearson
-- [ ] Spearman
-- [ ] RMSE
-- [ ] MAE
-- [ ] R²
-
 ## Project Inspiration
 This project builds upon our previous work on **Prot2Prop**, a lightweight framework for multitask protein property prediction using pretrained protein language models.
 
