@@ -317,6 +317,11 @@ python aggregate_data.py            # writes data/aggregated/aggregated.duckdb
 duckdb data/aggregated/aggregated.duckdb -ui   # inspect
 ```
 
+### Adding a new source
+1. Add `sources/<name>.py` with `def iter_<name>() -> Iterator[InteractionEntry]` (yield **sequences only**; set `interaction_label` and/or `affinity_nm`).
+2. Register a `SourceSpec` in `sources.build_source_specs()` — list position sets priority (earlier wins on duplicate canonical pairs).
+3. Document its download here, targeting `./data/raw/<name>/`.
+
 ### Sequence resolution (required for Negatome)
 These sources distribute interactions as **UniProt accession pairs**, not sequences. Provide one or more UniProt FASTA files in `data/raw/uniprot/` and the loaders resolve accessions locally (no network calls); unresolved accessions are skipped. Swiss-Prot is a good default:
 ```bash
@@ -335,40 +340,29 @@ wget -P data/raw/uniprot https://ftp.uniprot.org/pub/databases/uniprot/current_r
 | literature-derived | affinity (+optional binary) | user-defined | user-provided CSV |
 
 ### PPB-Affinity filtered (protein–protein affinities, positives)
-The filtered PPB-Affinity CSV provides pre-extracted `Ligand Sequences`,
-`Receptor Sequences`, and `KD(M)` columns. `KD(M)` is Kd in molar units; the
-loader converts it to nM and the aggregator stores the standardized pKd target.
-Download it directly into the path expected by the loader:
+The filtered PPB-Affinity CSV provides pre-extracted `Ligand Sequences`, `Receptor Sequences`, and `KD(M)` columns. `KD(M)` is Kd in molar units; the loader converts it to nM and the aggregator stores the standardized pKd target. Download it directly into the path expected by the loader:
 
 ```bash
 wget -O data/raw/ppb_affinity_filtered.csv https://huggingface.co/datasets/proteinea/ppb_affinity/resolve/main/filtered.csv
 ```
 
 ### SKEMPI v2.0 (protein–protein affinities, wild-type + mutants, positives)
-SKEMPI's CSV contains no sequences — only PDB ids + chains — so the loader
-reconstructs chain sequences from the bundled cleaned PDB structures (ATOM
-records) and applies each cleaned point mutation to produce the mutant complex.
-Both the CSV and the PDB bundle are required:
+SKEMPI's CSV contains no sequences — only PDB ids + chains — so the loader reconstructs chain sequences from the bundled cleaned PDB structures (ATOM records) and applies each cleaned point mutation to produce the mutant complex. Both the CSV and the PDB bundle are required:
 
 ```bash
 wget -O data/raw/skempi_v2.csv https://life.bsc.es/pid/skempi2/database/download/skempi_v2.csv
 curl -L https://life.bsc.es/pid/skempi2/database/download/SKEMPI2_PDBs.tgz | tar -xz -C data/raw   # -> data/raw/PDBs/
 ```
 
-Yields ~348 wild-type complexes and ~7,000 mutant complexes. The
-`Affinity_wt_parsed` and `Affinity_mut_parsed` columns are Kd in molar units;
-the loader converts them to nM and the aggregator stores standardized pKd. Both
-wild-type and mutants are labeled positive (SKEMPI only records complexes that
-form). Rows whose mutation numbering does not match the structure are skipped.
+Yields ~348 wild-type complexes and ~7,000 mutant complexes. The `Affinity_wt_parsed` and `Affinity_mut_parsed` columns are Kd in molar units;
+the loader converts them to nM and the aggregator stores standardized pKd. Both wild-type and mutants are labeled positive (SKEMPI only records complexes that form). Rows whose mutation numbering does not match the structure are skipped.
 
 ### IntAct (physical PPIs, positives + negatives)
 ```bash
 wget -O data/raw/intact_all_2026_07_03.zip https://ftp.ebi.ac.uk/pub/databases/intact/current/all.zip
 ```
 
-The IntAct loader reads the local bulk ZIP configured by `config.INTACT_ARCHIVE_PATH`.
-It parses the positive and negative MITAB exports and resolves sequences from
-the bundled IntAct FASTA, so no separate UniProt FASTA is required for IntAct.
+The IntAct loader reads the local bulk ZIP configured by `config.INTACT_ARCHIVE_PATH`. It parses the positive and negative MITAB exports and resolves sequences from the bundled IntAct FASTA, so no separate UniProt FASTA is required for IntAct.
 
 ### Negatome 2.0 (non-interacting pairs, the only negatives)
 ```bash
@@ -376,13 +370,10 @@ mkdir -p data/raw/negatome
 wget -P data/raw/negatome https://mips.helmholtz-muenchen.de/proj/ppi/negatome/combined_stringent.txt
 ```
 
-The `combined_stringent` list excludes pairs seen interacting in IntAct, making
-it the safest negative set.
+The `combined_stringent` list excludes pairs seen interacting in IntAct, making it the safest negative set.
 
 ### STRING (functional associations, positives — filter carefully)
-Download **per species** (physical subnetwork + matching sequences). The loader
-keeps edges with combined score ≥ 700 **and** nonzero experimental/database
-evidence, and ships its own sequences so no UniProt map is needed.
+Download **per species** (physical subnetwork + matching sequences). The loader keeps edges with combined score ≥ 700 **and** nonzero experimental/database evidence, and ships its own sequences so no UniProt map is needed.
 
 ```bash
 mkdir -p data/raw/string
@@ -393,33 +384,13 @@ wget -P data/raw/string https://stringdb-downloads.org/download/protein.sequence
 
 ### Literature-derived affinity (user-provided)
 No canonical download. Drop CSVs into `data/raw/literature/` with a header row:
-
 ```csv
 seq1,seq2,affinity_nm,interaction_label
 MKT...,MSD...,12.5,
 MGH...,MSD...,,1
 ```
 
-`seq1`/`seq2` are amino-acid sequences (use a `:`-delimited value for a
-multi-chain side). `affinity_nm` (Kd in nM) and `interaction_label` (`1`/`0`)
-are optional; rows with neither default to a positive interaction. The canonical
-DuckDB table stores only the standardized `affinity_pkd` value, not raw nM.
-
-## Deferred: protein–ligand sources (pending molecule modality)
-**BioLiP** (and other protein–small-molecule sets such as BindingDB/PDBbind) are
-**not registered**. The current `InteractionEntry` contract and `tokenize_data.py`
-accept **amino-acid sequences only** — every group member is fed to ProstT5 as a
-protein. Emitting SMILES ligands would be silently tokenized as amino acids.
-These sources should be wired in only after a molecule modality is added to the
-contract. (A protein–peptide subset of BioLiP, where the ligand is a peptide
-sequence, could be extracted for the sequence pipeline in the meantime.)
-
-## Adding a new source
-1. Add `sources/<name>.py` with `def iter_<name>() -> Iterator[InteractionEntry]`
-   (yield **sequences only**; set `interaction_label` and/or `affinity_nm`).
-2. Register a `SourceSpec` in `sources.build_source_specs()` — list position sets
-   priority (earlier wins on duplicate canonical pairs).
-3. Document its download here, targeting `./data/raw/<name>/`.
+`seq1`/`seq2` are amino-acid sequences (use a `:`-delimited value for a multi-chain side). `affinity_nm` (Kd in nM) and `interaction_label` (`1`/`0`) are optional; rows with neither default to a positive interaction. The canonical DuckDB table stores only the standardized `affinity_pkd` value, not raw nM.
 
 ## Inference Workflow
 ```
