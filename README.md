@@ -112,25 +112,6 @@ Protein Group B
 └────────────────┘
 ```
 
-## Training Strategy
-### Phase 1
-Freeze ProstT5 completely.
-
-Train only:
-
-- pooling layers
-- interaction module
-- prediction head
-
-### Phase 2
-Enable adapter training.
-Fine-tune:
-- LoRA
-- adapters
-
-while leaving the backbone frozen.
-This should improve performance while remaining lightweight.
-
 ### Multi-Task Learning
 Rather than training only affinity regression, jointly train:
 - interaction classification
