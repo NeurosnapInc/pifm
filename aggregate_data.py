@@ -15,9 +15,8 @@ from typing import List, Optional, Sequence, Tuple
 import duckdb
 import pandas as pd
 
-from contract import InteractionEntry, SequenceGroup, SourceSpec
+from contract import SequenceGroup, SourceSpec
 from sources import build_source_specs
-
 
 INSERT_CHUNK_SIZE = 50_000
 INSERT_COLUMNS = ["source", "group1", "group2", "interaction_label", "affinity_pkd"]
