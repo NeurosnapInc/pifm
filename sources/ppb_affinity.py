@@ -1,34 +1,25 @@
-"""PPB-Affinity source loader.
-
-This loader expects the filtered PPB-Affinity CSV to be available at
-`data/raw/ppb_affinity_filtered.csv`. Rows are converted into sequence-level
-interaction entries with KD values converted from molar units to nM.
-"""
+"""PPB-Affinity source loader."""
 
 import csv
 from pathlib import Path
 from typing import Iterable, List, Optional
 
-from sources.source_types import InteractionEntry
+from contract import InteractionEntry
 
 
 PPB_AFFINITY_FILTERED_PATH = Path("data/raw/ppb_affinity_filtered.csv")
 
 
 def _split_sequence_column(value: str) -> List[str]:
-  return [
-    seq.strip()
-    for seq in value.replace("\n", ",").split(",")
-    if seq.strip()
-  ]
+  return [seq.strip() for seq in value.replace("\n", ",").split(",") if seq.strip()]
 
 
-def iter_ppb_affinity_entries(csv_path: Path = PPB_AFFINITY_FILTERED_PATH) -> Iterable[InteractionEntry]:
+def iter_ppb_affinity(csv_path: Path = PPB_AFFINITY_FILTERED_PATH) -> Iterable[InteractionEntry]:
   """Yield interaction entries from the local PPB-Affinity filtered CSV."""
   if not csv_path.exists():
     print(
       f"Warning: expected PPB-Affinity data at {csv_path}. "
-      "Download filtered.csv and place it at data/raw/ppb_affinity_filtered.csv.",
+      "Download it with the wget command in README.md.",
       flush=True,
     )
     return
@@ -57,9 +48,14 @@ def iter_ppb_affinity_entries(csv_path: Path = PPB_AFFINITY_FILTERED_PATH) -> It
           affinity_nm = None
 
       yield InteractionEntry(
-        source="ppb_affinity_filtered",
+        source="ppb_affinity",
         group1=ligand_sequences,
         group2=receptor_sequences,
         affinity_nm=affinity_nm,
         interaction_label=True,
       )
+
+
+def iter_ppb_affinity_entries(csv_path: Path = PPB_AFFINITY_FILTERED_PATH) -> Iterable[InteractionEntry]:
+  """Compatibility alias for older imports."""
+  yield from iter_ppb_affinity(csv_path)

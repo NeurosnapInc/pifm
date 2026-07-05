@@ -1,21 +1,11 @@
-from dataclasses import dataclass
-from typing import Callable, Iterable, Optional, Sequence, Union
+"""Compatibility re-export for source loader contracts.
+
+New code should import these names from `contract`, but this module remains so
+older source modules or notebooks that import `sources.source_types` keep
+working.
+"""
+
+from contract import InteractionEntry, SequenceGroup, SourceFactory, SourceSpec
 
 
-SequenceGroup = Union[str, Sequence[str]]
-SourceFactory = Callable[[], Iterable["InteractionEntry"]]
-
-
-@dataclass(frozen=True)
-class InteractionEntry:
-  source: str
-  group1: SequenceGroup
-  group2: SequenceGroup
-  affinity_nm: Optional[float] = None
-  interaction_label: Optional[bool] = None
-
-
-@dataclass(frozen=True)
-class SourceSpec:
-  name: str
-  loader: SourceFactory
+__all__ = ["InteractionEntry", "SequenceGroup", "SourceFactory", "SourceSpec"]

@@ -1,76 +1,39 @@
 """
 Aggregate protein-group interaction datasets into a DuckDB database.
 
-The expected source contract is intentionally lightweight so new datasets can be
-registered without modifying the rest of the training pipeline:
-
-- add one `SourceSpec` to `SOURCE_SPECS`
-- implement an iterable or generator function that yields `InteractionEntry`
-
-Inspect results:
-  duckdb -ui data/aggregated/aggregated.duckdb
+Source loaders are registered in `sources.build_source_specs()` and yield
+`contract.InteractionEntry` objects. The aggregator canonicalizes sequence
+groups, enforces order-invariant pair uniqueness, and writes the unified
+`samples` table consumed by tokenization and training.
 """
 
 import argparse
 import math
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
-from typing import Iterable, List, Optional, Sequence, Tuple
 
 import duckdb
 import pandas as pd
 
-# InteractionEntry / SourceSpec live in ``contract`` so source loaders can import
-# them without a circular dependency on this module. Re-exported here so existing
-# imports (``from aggregate_data import InteractionEntry``) keep working.
-from contract import InteractionEntry, SequenceGroup, SourceSpec  # noqa: F401
+from contract import InteractionEntry, SequenceGroup, SourceSpec
 from sources import build_source_specs
 
 
-# Source priority is defined by list order. Earlier sources win if multiple sources
-# provide the same canonicalized group pair. Registration lives in ``sources``.
-SOURCE_SPECS: List[SourceSpec] = build_source_specs()
-from sources.intact import iter_intact_entries
-from sources.ppb_affinity import iter_ppb_affinity_entries
-from sources.skempi import iter_skempi_entries
-from sources.source_types import InteractionEntry, SequenceGroup, SourceSpec
-
-
-SOURCE_INSERT_BATCH_SIZE = 5_000
-
-
-def _empty_loader() -> Iterable[InteractionEntry]:
-  """Provide a no-op source loader placeholder.
-
-  This is only here so the file has a valid example loader shape before any
-  real data sources are registered. It returns an empty iterable and does not
-  perform any I/O or validation.
-  """
-  return []
+INSERT_CHUNK_SIZE = 50_000
+INSERT_COLUMNS = ["source", "group1", "group2", "interaction_label", "affinity_nm", "affinity_pkd"]
 
 
 # Source priority is defined by list order. Earlier sources win if multiple
 # sources provide the same canonicalized group pair.
-SOURCE_SPECS: List[SourceSpec] = [
-  SourceSpec(name="ppb_affinity_filtered", loader=iter_ppb_affinity_entries),
-  SourceSpec(name="skempi_v2", loader=iter_skempi_entries),
-  SourceSpec(name="intact", loader=iter_intact_entries),
-]
+SOURCE_SPECS: List[SourceSpec] = build_source_specs()
 
 
 def normalize_chain_group(group: SequenceGroup) -> str:
   """Convert one interaction-side group into its canonical serialized form.
 
-  The aggregation layer needs a stable representation for each side of a
-  protein complex so deduplication does not depend on how an upstream source
-  happened to order chains. This helper accepts either a pre-delimited string
-  or an iterable of raw amino-acid sequences, strips empty items, uppercases
-  all sequences, sorts them alphabetically, and joins them with `":"`.
-
-  The result is the only group representation that should be written to the
-  database or used for downstream comparisons. If the incoming value contains
-  no usable sequences after cleanup, the row is treated as invalid and the
-  caller should skip it.
+  This helper accepts either a pre-delimited string or an iterable of raw
+  amino-acid sequences, strips empty items, uppercases sequences, sorts them
+  alphabetically, and joins them with `":"`.
   """
   if isinstance(group, str):
     parts = [part.strip().upper() for part in group.split(":") if part.strip()]
@@ -79,40 +42,18 @@ def normalize_chain_group(group: SequenceGroup) -> str:
 
   if not parts:
     raise ValueError("Encountered an empty chain group.")
-
   return ":".join(sorted(parts))
 
 
 def canonicalize_pair(group1: SequenceGroup, group2: SequenceGroup) -> Tuple[str, str]:
-  """Canonicalize a two-sided interaction pair into an order-invariant key.
-
-  The model still distinguishes the partition between the two sides of the
-  interaction, so each group is preserved as its own normalized unit. What is
-  intentionally removed is the arbitrary top-level ordering between those two
-  units. After each side is normalized independently, the pair itself is sorted
-  so that `(A:B, C:D)` and `(C:D, A:B)` become the same canonical database key.
-
-  This preserves bipartite structure while preventing duplicate rows caused
-  purely by source-specific left/right ordering conventions.
-  """
+  """Canonicalize an interaction pair into an order-invariant database key."""
   normalized = [normalize_chain_group(group1), normalize_chain_group(group2)]
   normalized.sort()
   return normalized[0], normalized[1]
 
 
 def affinity_nm_to_pkd(affinity_nm: Optional[float]) -> Optional[float]:
-  """Convert an affinity measurement from nanomolar units into pKd space.
-
-  The raw sources may provide affinity in nM, but the training pipeline is
-  expected to operate on a log-scale target because it is numerically better
-  behaved and aligns more naturally with standard biochemical conventions.
-  This helper applies the identity `pKd = 9 - log10(Kd_nM)`, which is
-  equivalent to `-log10(Kd_M)`.
-
-  Missing affinity values remain missing so the regression task can be masked
-  cleanly downstream. Non-positive affinity values are rejected because the
-  logarithm would be invalid and such rows indicate a broken source record.
-  """
+  """Convert a Kd measurement from nanomolar units into pKd space."""
   if affinity_nm is None:
     return None
 
@@ -123,29 +64,14 @@ def affinity_nm_to_pkd(affinity_nm: Optional[float]) -> Optional[float]:
 
 
 def _coerce_interaction_label(value: Optional[bool], affinity_nm: Optional[float]) -> Optional[float]:
-  """Map a source interaction label into the numeric format used by training.
-
-  The output is stored as a float so it is immediately compatible with the rest
-  of the aggregation and tokenization flow, which treats labels generically
-  before task-specific casting. Rows that do not explicitly provide a binary
-  label are assumed to be positive observations because curated source entries
-  represent known interactions unless a source explicitly contributes negatives.
-  """
+  """Map a source interaction label into the numeric format used by training."""
   if value is None:
     return 1.0
   return 1.0 if bool(value) else 0.0
 
 
 def _prepare_db(con: duckdb.DuckDBPyConnection):
-  """Recreate the target DuckDB schema from scratch.
-
-  Aggregation is designed to be deterministic and rerunnable, so this function
-  drops any existing `samples` table and creates a fresh one with the canonical
-  columns expected by the rest of the project. The uniqueness constraint is
-  intentionally applied to `(group1, group2)` only, after canonicalization, so
-  duplicate source rows cannot survive just because their original order
-  differed.
-  """
+  """Recreate the target DuckDB schema from scratch."""
   con.execute("DROP TABLE IF EXISTS samples")
   con.execute(
     """
@@ -158,29 +84,16 @@ def _prepare_db(con: duckdb.DuckDBPyConnection):
       affinity_pkd DOUBLE,
       CONSTRAINT samples_group_pair_unique UNIQUE(group1, group2)
     )
+    """
+  )
 
 
-_INSERT_COLUMNS = ["source", "group1", "group2", "interaction_label", "affinity_nm", "affinity_pkd"]
-
-# Rows are inserted in bounded chunks so a single large source (e.g. IntAct,
-# which yields millions of rows) never materializes its full row set in memory.
-INSERT_CHUNK_SIZE = 50_000
-
-
-def _flush_chunk(con: duckdb.DuckDBPyConnection, buffer: List[tuple]) -> int:
-  """Insert one buffered chunk of canonicalized rows, returning rows inserted.
-
-  Deduplication against already-present pairs is handled by the table's
-  `ON CONFLICT(group1, group2) DO NOTHING` policy, so chunk boundaries do not
-  affect the final result: a pair seen in an earlier chunk (or an earlier,
-  higher-priority source) is skipped here. The number inserted is measured as
-  the change in table size, which naturally accounts for both cross-chunk and
-  intra-chunk duplicates.
-  """
-  if not buffer:
+def _flush_chunk(con: duckdb.DuckDBPyConnection, rows: List[tuple]) -> int:
+  """Insert one buffered chunk and return the number of rows inserted."""
+  if not rows:
     return 0
 
-  df = pd.DataFrame(buffer, columns=_INSERT_COLUMNS)
+  df = pd.DataFrame(rows, columns=INSERT_COLUMNS)
   con.register("source_rows", df)
   try:
     before = con.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
@@ -200,81 +113,16 @@ def _flush_chunk(con: duckdb.DuckDBPyConnection, buffer: List[tuple]) -> int:
 
 
 def _insert_source_rows(con: duckdb.DuckDBPyConnection, spec: SourceSpec):
-    """Normalize and insert all rows produced by one registered source.
-
-    Each yielded entry is validated, canonicalized, and converted into the
-    database schema before any insertion happens.  Invalid rows are skipped
-    with a diagnostic message rather than aborting the whole aggregation run.
-    After the rows are materialized into a temporary DataFrame, they are
-    inserted with an ``ON CONFLICT DO NOTHING`` policy on the canonical pair
-    key.
-
-    Because sources are processed in the order they appear in
-    :data:`SOURCE_SPECS`, earlier sources take precedence when multiple
-    datasets contain the same canonicalized pair.  This gives the registry a
-    simple, explicit source‑quality priority mechanism without needing per‑row
-    merge logic.
-    """
-  )
-
-
-def _insert_source_rows(con: duckdb.DuckDBPyConnection, spec: SourceSpec):
   """Normalize and insert all rows produced by one registered source.
 
-  Each yielded entry is validated, canonicalized, and converted into the
-  database schema, then buffered and flushed in fixed-size chunks (see
-  `INSERT_CHUNK_SIZE`) with an `ON CONFLICT DO NOTHING` policy on the canonical
-  pair key. Streaming in chunks keeps memory bounded regardless of source size.
-  Invalid rows are skipped with a diagnostic message rather than aborting the
-  whole aggregation run.
-  database schema before any insertion happens. Invalid rows are skipped with a
-  diagnostic message rather than aborting the whole aggregation run. Rows are
-  flushed in batches so large sources, such as IntAct, do not need to be fully
-  materialized in memory before insertion.
-
-  Because sources are processed in the order they appear in `SOURCE_SPECS`,
-  earlier sources take precedence when multiple datasets contain the same
-  canonicalized pair. This gives the registry a simple, explicit source-quality
-  priority mechanism without needing per-row merge logic.
+  Rows are canonicalized and flushed in fixed-size chunks so large sources do
+  not need to be materialized fully in memory. Duplicates are skipped by the
+  table uniqueness constraint.
   """
   buffer: List[tuple] = []
   valid_rows = 0
   inserted = 0
   skipped_invalid = 0
-  pending_rows = []
-  skipped_invalid = 0
-  skipped_duplicates = 0
-  inserted_total = 0
-  processed_total = 0
-
-  def flush_pending_rows():
-    nonlocal inserted_total, skipped_duplicates
-    if not pending_rows:
-      return
-
-    df = pd.DataFrame(
-      pending_rows,
-      columns=["source", "group1", "group2", "interaction_label", "affinity_nm", "affinity_pkd"],
-    )
-    con.register("source_rows", df)
-    try:
-      before = con.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
-      con.execute(
-        """
-        INSERT INTO samples(source, group1, group2, interaction_label, affinity_nm, affinity_pkd)
-        SELECT source, group1, group2, interaction_label, affinity_nm, affinity_pkd
-        FROM source_rows
-        ON CONFLICT(group1, group2) DO NOTHING
-        """
-      )
-      after = con.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
-    finally:
-      con.unregister("source_rows")
-
-    inserted = after - before
-    inserted_total += inserted
-    skipped_duplicates += len(pending_rows) - inserted
-    pending_rows.clear()
 
   for entry in spec.loader():
     try:
@@ -293,47 +141,23 @@ def _insert_source_rows(con: duckdb.DuckDBPyConnection, spec: SourceSpec):
     if len(buffer) >= INSERT_CHUNK_SIZE:
       inserted += _flush_chunk(con, buffer)
       buffer.clear()
-
-  inserted += _flush_chunk(con, buffer)
-
-  skipped_duplicates = valid_rows - inserted
-  print(f"Source={spec.name} inserted={inserted} skipped_invalid={skipped_invalid} skipped_duplicate={skipped_duplicates}")
-    pending_rows.append(
-      (
-        entry.source or spec.name,
-        group1,
-        group2,
-        interaction_label,
-        affinity_nm,
-        affinity_pkd,
-      )
-    )
-    processed_total += 1
-
-    if len(pending_rows) >= SOURCE_INSERT_BATCH_SIZE:
-      flush_pending_rows()
+      skipped_duplicates = valid_rows - inserted
       print(
-        f"Source={spec.name} processed={processed_total} "
-        f"inserted={inserted_total} skipped_duplicate={skipped_duplicates}",
+        f"Source={spec.name} processed={valid_rows} inserted={inserted} skipped_duplicate={skipped_duplicates}",
         flush=True,
       )
 
-  flush_pending_rows()
+  inserted += _flush_chunk(con, buffer)
+  skipped_duplicates = valid_rows - inserted
   print(
-    f"Source={spec.name} inserted={inserted_total} "
+    f"Source={spec.name} inserted={inserted} "
     f"skipped_invalid={skipped_invalid} skipped_duplicate={skipped_duplicates}",
     flush=True,
   )
 
 
 def _print_dataset_audit(con: duckdb.DuckDBPyConnection):
-  """Print a high-level audit summary for the aggregated dataset.
-
-  The goal is not exhaustive reporting, just a fast sanity check after an
-  aggregation run. The summary makes it easy to confirm that rows were loaded,
-  multiple sources were seen when expected, and both interaction and affinity
-  supervision are present at non-zero counts.
-  """
+  """Print a compact summary of the aggregated dataset."""
   row = con.execute(
     """
     SELECT
@@ -354,14 +178,7 @@ def _print_dataset_audit(con: duckdb.DuckDBPyConnection):
 
 
 def aggregate(source_specs: Sequence[SourceSpec], out_db: Path):
-  """Build the aggregated DuckDB file from the registered source list.
-
-  This is the main orchestration entrypoint for data aggregation. It creates the
-  output directory if needed, recreates the target schema, processes each source
-  in registry order, and finally prints a compact audit of the resulting table.
-  The output database is self-contained and intended to be the single handoff
-  artifact consumed by tokenization and downstream training scripts.
-  """
+  """Build the aggregated DuckDB file from the registered source list."""
   out_db.parent.mkdir(parents=True, exist_ok=True)
   con = duckdb.connect(out_db.as_posix())
   try:
@@ -376,18 +193,12 @@ def aggregate(source_specs: Sequence[SourceSpec], out_db: Path):
 
 
 def _parse_args():
-  """Parse command-line options for the aggregation CLI."""
   parser = argparse.ArgumentParser(description="Aggregate interaction-group datasets into DuckDB.")
-  parser.add_argument(
-    "--out-db",
-    default="data/aggregated/aggregated.duckdb",
-    help="Output DuckDB path.",
-  )
+  parser.add_argument("--out-db", default="data/aggregated/aggregated.duckdb", help="Output DuckDB path.")
   return parser.parse_args()
 
 
 def main():
-  """Run the aggregation CLI using the currently registered sources."""
   args = _parse_args()
   aggregate(SOURCE_SPECS, Path(args.out_db))
 

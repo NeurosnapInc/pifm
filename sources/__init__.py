@@ -20,12 +20,14 @@ from .dip import iter_dip
 from .intact import iter_intact
 from .literature_affinity import iter_literature_affinity
 from .negatome import iter_negatome
+from .ppb_affinity import iter_ppb_affinity
 from .skempi import iter_skempi
 from .string_db import iter_string
 
 
 def build_source_specs() -> List[SourceSpec]:
   return [
+    SourceSpec(name="ppb_affinity", loader=iter_ppb_affinity),
     SourceSpec(name="skempi", loader=iter_skempi),
     SourceSpec(name="literature_affinity", loader=iter_literature_affinity),
     SourceSpec(name="intact", loader=iter_intact),
@@ -36,4 +38,3 @@ def build_source_specs() -> List[SourceSpec]:
 
 
 __all__ = ["build_source_specs"]
-"""Dataset source loaders used by aggregate_data.py."""

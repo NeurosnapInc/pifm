@@ -390,66 +390,6 @@ Two curated sources are currently supported:
 
 These sources were chosen because they provide sequence‑resolvable protein chains and measured affinities, which map naturally to the `group1`/`group2` schema used by the aggregation pipeline. Binary interaction labels are inferred to be positive for these curated datasets.
 
-## Data Directory Structure
-
-```
-data/
-├─ raw/          # input files downloaded from each source (see below)
-└─ aggregated/
-   └─ aggregated.duckdb  # database created by the aggregation script
-```
-
-All raw files must reside under `data/raw/` before running the aggregator.
-
-## Download Instructions
-
-### 1. Prepare the raw data directory
-
-Create the folder if it does not already exist:
-
-```bash
-mkdir -p data/raw
-```
-
-### 2. Get the PPB‑Affinity (filtered) dataset
-
-Download the filtered PPB-Affinity CSV directly from Hugging Face and save it under the filename expected by the loader:
-
-```bash
-wget -O data/raw/ppb_affinity_filtered.csv https://huggingface.co/datasets/proteinea/ppb_affinity/resolve/main/filtered.csv
-```
-
-This CSV provides pre‑extracted "Ligand Sequences" and "Receptor Sequences" columns, and a "KD(M)" column containing dissociation constants in molar units. If there are multiple chains on either side, the sequences are comma‑separated.
-
-### 3. Get the SKEMPI v2.0 dataset
-
-Download the SKEMPI v2.0 CSV and cleaned PDB archive directly into `data/raw/`:
-
-```bash
-wget -O data/raw/skempi_v2.csv https://life.bsc.es/pid/skempi2/database/download/skempi_v2.csv
-wget -O data/raw/SKEMPI2_PDBs.tgz https://life.bsc.es/pid/skempi2/database/download/SKEMPI2_PDBs.tgz
-```
-
-Optional — unpack the PDB archive for inspection:
-
-```bash
-tar -xzf data/raw/SKEMPI2_PDBs.tgz -C data/raw
-```
-
-SKEMPI v2.0 contains data on thermodynamic parameters and kinetic rate constants for protein–protein interactions with solved structures, with a total of 7,085 mutation entries.
-
-### 4. Get the IntAct bulk archive
-
-Download the current IntAct bulk export from EBI and save it under `data/raw/` with the date-stamped filename expected by `config.py`:
-
-```bash
-wget -O data/raw/intact_all_2026_07_03.zip https://ftp.ebi.ac.uk/pub/databases/intact/current/all.zip
-```
-
-The IntAct loader expects this ZIP to contain the positive MITAB export, negative MITAB export, and bundled FASTA file used for sequence resolution.
-
----
-
 # Data Sources & Downloads
 
 Aggregation is source-driven. Each dataset has a loader in the `sources/`
@@ -457,16 +397,25 @@ package that yields `InteractionEntry` objects; loaders are registered (in
 priority order) by `sources.build_source_specs()` and consumed by
 `aggregate_data.py`.
 
-**All raw downloads go under `./data/raw/<source>/`** (git-ignored). Loaders are
+Raw downloads live under `./data/raw/` (git-ignored). Some sources use a
+source-specific subdirectory when they require multiple files. Loaders are
 defensive: if their files are absent they print a download hint and yield
-nothing, so `python aggregate_data.py` always runs. Once data is present, run:
+nothing, so `python aggregate_data.py` always runs.
+
+Prepare the raw data directory:
+
+```bash
+mkdir -p data/raw
+```
+
+Once data is present, run:
 
 ```bash
 python aggregate_data.py            # writes data/aggregated/aggregated.duckdb
 duckdb data/aggregated/aggregated.duckdb -ui   # inspect
 ```
 
-## Sequence resolution (required for Negatome / IntAct / DIP)
+## Sequence resolution (required for Negatome / DIP)
 
 These sources distribute interactions as **UniProt accession pairs**, not
 sequences. Provide one or more UniProt FASTA files in `data/raw/uniprot/` and
@@ -483,12 +432,24 @@ wget -P data/raw/uniprot \
 
 | Source | Labels | Pos/Neg | Download |
 |---|---|---|---|
+| PPB-Affinity filtered | affinity | positive | free (Hugging Face) |
 | SKEMPI v2.0 | affinity | positive | free (~32 MB) |
-| IntAct | binary | positive | free (FTP) |
+| IntAct | binary | positive + negative | free (FTP, large ZIP) |
 | DIP | binary | positive | **free login required** |
 | Negatome 2.0 | binary | **negative** | free |
 | STRING (filtered) | binary | positive | free (per species) |
 | literature-derived | affinity (+optional binary) | user-defined | user-provided CSV |
+
+### PPB-Affinity filtered (protein–protein affinities, positives)
+
+The filtered PPB-Affinity CSV provides pre-extracted `Ligand Sequences`,
+`Receptor Sequences`, and `KD(M)` columns. Download it directly into the path
+expected by the loader:
+
+```bash
+wget -O data/raw/ppb_affinity_filtered.csv \
+  https://huggingface.co/datasets/proteinea/ppb_affinity/resolve/main/filtered.csv
+```
 
 ### SKEMPI v2.0 (protein–protein affinities, wild-type + mutants, positives)
 
@@ -510,16 +471,16 @@ Yields ~348 wild-type complexes and ~7,000 mutant complexes (Kd → pKd). Both
 wild-type and mutants are labeled positive (SKEMPI only records complexes that
 form). Rows whose mutation numbering does not match the structure are skipped.
 
-### IntAct (physical PPIs, positives)
+### IntAct (physical PPIs, positives + negatives)
 
 ```bash
-mkdir -p data/raw/intact
-wget -O data/raw/intact/intact.txt \
-  https://ftp.ebi.ac.uk/pub/databases/intact/current/psimitab/intact.txt
+wget -O data/raw/intact_all_2026_07_03.zip \
+  https://ftp.ebi.ac.uk/pub/databases/intact/current/all.zip
 ```
 
-Loader keeps physical/direct interactions (MI:0915 / MI:0407 / MI:0914) between
-two UniProt accessions with MI-score ≥ 0.40.
+The IntAct loader reads the local bulk ZIP configured by `config.INTACT_ARCHIVE_PATH`.
+It parses the positive and negative MITAB exports and resolves sequences from
+the bundled IntAct FASTA, so no separate UniProt FASTA is required for IntAct.
 
 ### Negatome 2.0 (non-interacting pairs, the only negatives)
 
