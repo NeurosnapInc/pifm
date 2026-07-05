@@ -71,7 +71,7 @@ def _uniprot_accession(header: str) -> str:
 def uniprot_sequences() -> Dict[str, str]:
   """Load a UniProt accession -> sequence map from ``data/raw/uniprot/``.
 
-  Several sources (Negatome, IntAct, DIP) distribute interactions as UniProt
+  Some sources, such as Negatome, distribute interactions as UniProt
   accession pairs rather than sequences. Drop one or more UniProt FASTA files
   (e.g. ``uniprot_sprot.fasta.gz`` or per-proteome FASTAs) into
   ``data/raw/uniprot/`` and every accession-based loader can resolve sequences

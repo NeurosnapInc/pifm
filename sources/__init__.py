@@ -16,7 +16,6 @@ from typing import List
 
 from contract import SourceSpec
 
-from .dip import iter_dip
 from .intact import iter_intact
 from .literature_affinity import iter_literature_affinity
 from .negatome import iter_negatome
@@ -31,7 +30,6 @@ def build_source_specs() -> List[SourceSpec]:
     SourceSpec(name="skempi", loader=iter_skempi),
     SourceSpec(name="literature_affinity", loader=iter_literature_affinity),
     SourceSpec(name="intact", loader=iter_intact),
-    SourceSpec(name="dip", loader=iter_dip),
     SourceSpec(name="negatome", loader=iter_negatome),
     SourceSpec(name="string", loader=iter_string),
   ]

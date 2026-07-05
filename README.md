@@ -317,7 +317,7 @@ python aggregate_data.py            # writes data/aggregated/aggregated.duckdb
 duckdb data/aggregated/aggregated.duckdb -ui   # inspect
 ```
 
-### Sequence resolution (required for Negatome / DIP)
+### Sequence resolution (required for Negatome)
 These sources distribute interactions as **UniProt accession pairs**, not sequences. Provide one or more UniProt FASTA files in `data/raw/uniprot/` and the loaders resolve accessions locally (no network calls); unresolved accessions are skipped. Swiss-Prot is a good default:
 ```bash
 mkdir -p data/raw/uniprot
@@ -330,7 +330,6 @@ wget -P data/raw/uniprot https://ftp.uniprot.org/pub/databases/uniprot/current_r
 | PPB-Affinity filtered | affinity | positive | free (Hugging Face) |
 | SKEMPI v2.0 | affinity | positive | free (~32 MB) |
 | IntAct | binary | positive + negative | free (FTP, large ZIP) |
-| DIP | binary | positive | **free login required** |
 | Negatome 2.0 | binary | **negative** | free |
 | STRING (filtered) | binary | positive | free (per species) |
 | literature-derived | affinity (+optional binary) | user-defined | user-provided CSV |
@@ -379,14 +378,6 @@ wget -P data/raw/negatome https://mips.helmholtz-muenchen.de/proj/ppi/negatome/c
 
 The `combined_stringent` list excludes pairs seen interacting in IntAct, making
 it the safest negative set.
-
-### DIP (curated physical PPIs, positives — manual download)
-DIP requires a free account. Log in, download the full PSI-MITAB export from
-<https://dip.doe-mbi.ucla.edu/dip/Download.cgi>, and save it as:
-
-```
-data/raw/dip/dip.txt
-```
 
 ### STRING (functional associations, positives — filter carefully)
 Download **per species** (physical subnetwork + matching sequences). The loader
