@@ -1,9 +1,7 @@
 # Protein Interaction Foundation Model (PIFM)
-
 > A fast, scalable protein language model for predicting protein-protein interactions (PPI) and binding affinity between arbitrary protein complexes.
 
 ## Overview
-
 The goal of this project is to develop a lightweight and highly efficient model capable of predicting whether two groups of proteins interact and, if so, estimating their binding affinity.
 
 Unlike structure-based approaches (e.g., AlphaFold-Multimer, docking, molecular dynamics), this model should operate directly from amino acid sequences while maintaining inference speeds suitable for high-throughput screening.
@@ -40,8 +38,6 @@ Rather than training an entirely new protein language model, this project builds
 >
 > This should make it straightforward to rapidly prototype new architectures while maintaining a clean and maintainable codebase.
 
----
-
 ## Objectives
 
 Primary objectives:
@@ -58,10 +54,7 @@ Secondary objectives:
 - Generalize to unseen proteins
 - Support future extensions such as interface prediction or residue-level attribution
 
----
-
 ## Motivation
-
 Protein property prediction can be solved effectively using pooled protein embeddings from pretrained protein language models.
 
 Protein interaction prediction is fundamentally different because:
@@ -73,12 +66,8 @@ Protein interaction prediction is fundamentally different because:
 
 This project investigates architectures capable of learning interactions between arbitrary protein sets while remaining computationally efficient.
 
----
-
 ## Proposed Architecture
-
 ### High-Level Pipeline
-
 ```
 Protein Group A
         │
@@ -123,10 +112,7 @@ Protein Group B
 └───────────────┘
 ```
 
----
-
 ### Stage 1: Protein Encoding
-
 Each protein sequence is independently embedded using ProstT5.
 
 Initial plan:
@@ -145,7 +131,6 @@ Advantages:
 Each protein produces residue embeddings.
 
 ### Stage 2: Chain Embedding
-
 Residue embeddings must be converted into a fixed-size chain representation.
 
 Initial baseline:
@@ -158,7 +143,6 @@ Protein Sequence → Residue Embeddings → Chain Embedding
 ```
 
 ### Stage 3: Protein Group Representation
-
 Each interaction side consists of one or more proteins.
 Example:
 Group A
@@ -192,10 +176,7 @@ should produce identical group representations.
 
 This avoids introducing arbitrary ordering bias.
 
----
-
 ### Stage 4: Interaction Modeling
-
 Simply concatenating two pooled embeddings may discard important chain-level interactions.
 
 Instead, we propose explicitly modeling interactions between chains.
@@ -231,17 +212,14 @@ where * denotes element-wise multiplication.
 These pairwise interaction embeddings are then pooled before final prediction.
 
 ### Stage 5: Prediction Head
-
 Outputs may include:
 
 #### Binary Classification
-
 ```
 P(interaction)
 ```
 
 #### Regression
-
 Predict
 
 ```
@@ -264,7 +242,6 @@ Potential future outputs:
 - residue attribution
 
 #### Why Not Concatenate Chains?
-
 One possible architecture is
 
 ```
@@ -287,12 +264,8 @@ Potential disadvantages:
 
 This remains an experimental direction but is not currently the primary architecture.
 
----
-
 ## Training Strategy
-
 ### Phase 1
-
 Freeze ProstT5 completely.
 
 Train only:
@@ -302,7 +275,6 @@ Train only:
 - prediction head
 
 ### Phase 2
-
 Enable adapter training.
 
 Fine-tune:
@@ -315,7 +287,6 @@ while leaving the backbone frozen.
 This should improve performance while remaining lightweight.
 
 ### Multi-Task Learning
-
 Rather than training only affinity regression, jointly train:
 
 - interaction classification
@@ -329,7 +300,6 @@ Advantages:
 - Handles noisy affinity labels better
 
 ## Data Sources & Downloads
-
 Aggregation is source-driven. Each dataset has a loader in the `sources/`
 package that yields `InteractionEntry` objects; loaders are registered (in
 priority order) by `sources.build_source_specs()` and consumed by
@@ -353,7 +323,6 @@ duckdb data/aggregated/aggregated.duckdb -ui   # inspect
 ```
 
 ### Sequence resolution (required for Negatome / DIP)
-
 These sources distribute interactions as **UniProt accession pairs**, not
 sequences. Provide one or more UniProt FASTA files in `data/raw/uniprot/` and
 the loaders resolve accessions locally (no network calls); unresolved
@@ -365,7 +334,6 @@ wget -P data/raw/uniprot https://ftp.uniprot.org/pub/databases/uniprot/current_r
 ```
 
 ### Registered sources
-
 | Source | Labels | Pos/Neg | Download |
 |---|---|---|---|
 | PPB-Affinity filtered | affinity | positive | free (Hugging Face) |
@@ -377,7 +345,6 @@ wget -P data/raw/uniprot https://ftp.uniprot.org/pub/databases/uniprot/current_r
 | literature-derived | affinity (+optional binary) | user-defined | user-provided CSV |
 
 ### PPB-Affinity filtered (protein–protein affinities, positives)
-
 The filtered PPB-Affinity CSV provides pre-extracted `Ligand Sequences`,
 `Receptor Sequences`, and `KD(M)` columns. Download it directly into the path
 expected by the loader:
@@ -387,7 +354,6 @@ wget -O data/raw/ppb_affinity_filtered.csv https://huggingface.co/datasets/prote
 ```
 
 ### SKEMPI v2.0 (protein–protein affinities, wild-type + mutants, positives)
-
 SKEMPI's CSV contains no sequences — only PDB ids + chains — so the loader
 reconstructs chain sequences from the bundled cleaned PDB structures (ATOM
 records) and applies each cleaned point mutation to produce the mutant complex.
@@ -403,7 +369,6 @@ wild-type and mutants are labeled positive (SKEMPI only records complexes that
 form). Rows whose mutation numbering does not match the structure are skipped.
 
 ### IntAct (physical PPIs, positives + negatives)
-
 ```bash
 wget -O data/raw/intact_all_2026_07_03.zip https://ftp.ebi.ac.uk/pub/databases/intact/current/all.zip
 ```
@@ -413,7 +378,6 @@ It parses the positive and negative MITAB exports and resolves sequences from
 the bundled IntAct FASTA, so no separate UniProt FASTA is required for IntAct.
 
 ### Negatome 2.0 (non-interacting pairs, the only negatives)
-
 ```bash
 mkdir -p data/raw/negatome
 wget -P data/raw/negatome https://mips.helmholtz-muenchen.de/proj/ppi/negatome/combined_stringent.txt
@@ -423,7 +387,6 @@ The `combined_stringent` list excludes pairs seen interacting in IntAct, making
 it the safest negative set.
 
 ### DIP (curated physical PPIs, positives — manual download)
-
 DIP requires a free account. Log in, download the full PSI-MITAB export from
 <https://dip.doe-mbi.ucla.edu/dip/Download.cgi>, and save it as:
 
@@ -432,7 +395,6 @@ data/raw/dip/dip.txt
 ```
 
 ### STRING (functional associations, positives — filter carefully)
-
 Download **per species** (physical subnetwork + matching sequences). The loader
 keeps edges with combined score ≥ 700 **and** nonzero experimental/database
 evidence, and ships its own sequences so no UniProt map is needed.
@@ -445,7 +407,6 @@ wget -P data/raw/string https://stringdb-downloads.org/download/protein.sequence
 ```
 
 ### Literature-derived affinity (user-provided)
-
 No canonical download. Drop CSVs into `data/raw/literature/` with a header row:
 
 ```csv
@@ -459,7 +420,6 @@ multi-chain side). `affinity_nm` (Kd in nM) and `interaction_label` (`1`/`0`)
 are optional; rows with neither default to a positive interaction.
 
 ## Deferred: protein–ligand sources (pending molecule modality)
-
 **BioLiP** (and other protein–small-molecule sets such as BindingDB/PDBbind) are
 **not registered**. The current `InteractionEntry` contract and `tokenize_data.py`
 accept **amino-acid sequences only** — every group member is fed to ProstT5 as a
@@ -469,14 +429,11 @@ contract. (A protein–peptide subset of BioLiP, where the ligand is a peptide
 sequence, could be extracted for the sequence pipeline in the meantime.)
 
 ## Adding a new source
-
 1. Add `sources/<name>.py` with `def iter_<name>() -> Iterator[InteractionEntry]`
    (yield **sequences only**; set `interaction_label` and/or `affinity_nm`).
 2. Register a `SourceSpec` in `sources.build_source_specs()` — list position sets
    priority (earlier wins on duplicate canonical pairs).
 3. Document its download here, targeting `./data/raw/<name>/`.
-
----
 
 ## Inference Workflow
 ```
@@ -498,7 +455,6 @@ Protein → Frozen ProstT5 → Mean Pool → Group Mean Pool → MLP → Interac
 ```
 
 ## Future Architecture
-
 ```
 Protein → ProstT5 + Adapters → Attention Pool → Set Encoder → Pairwise Interaction Network → MLP → Interaction + pKd
 ```
@@ -566,7 +522,6 @@ Regression:
 - [ ] R²
 
 ## Project Inspiration
-
 This project builds upon our previous work on **Prot2Prop**, a lightweight framework for multitask protein property prediction using pretrained protein language models.
 
 Repository:
