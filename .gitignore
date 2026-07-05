@@ -1,5 +1,6 @@
 __pycache__
 .venv
+pifm.egg-info
 
 # Raw + processed datasets (downloaded locally, never committed)
 data/
