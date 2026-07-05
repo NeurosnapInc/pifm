@@ -13,31 +13,17 @@ Inspect results:
 
 import argparse
 import math
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 import duckdb
 import pandas as pd
 
-
-SequenceGroup = Union[str, Sequence[str]]
-SourceFactory = Callable[[], Iterable["InteractionEntry"]]
-
-
-@dataclass(frozen=True)
-class InteractionEntry:
-  source: str
-  group1: SequenceGroup
-  group2: SequenceGroup
-  affinity_nm: Optional[float] = None
-  interaction_label: Optional[bool] = None
+from sources.intact import iter_intact_entries
+from sources.source_types import InteractionEntry, SequenceGroup, SourceSpec
 
 
-@dataclass(frozen=True)
-class SourceSpec:
-  name: str
-  loader: SourceFactory
+SOURCE_INSERT_BATCH_SIZE = 5_000
 
 
 def _empty_loader() -> Iterable[InteractionEntry]:
@@ -53,8 +39,7 @@ def _empty_loader() -> Iterable[InteractionEntry]:
 # Source priority is defined by list order. Earlier sources win if multiple sources
 # provide the same canonicalized group pair.
 SOURCE_SPECS: List[SourceSpec] = [
-  # Example:
-  # SourceSpec(name="bindingdb_curated", loader=iter_bindingdb_rows),
+  SourceSpec(name="intact", loader=lambda: iter_intact_entries()),
 ]
 
 
@@ -180,9 +165,40 @@ def _insert_source_rows(con: duckdb.DuckDBPyConnection, spec: SourceSpec):
   canonicalized pair. This gives the registry a simple, explicit source-quality
   priority mechanism without needing per-row merge logic.
   """
-  inserted_rows = []
+  pending_rows = []
   skipped_invalid = 0
   skipped_duplicates = 0
+  inserted_total = 0
+  processed_total = 0
+
+  def flush_pending_rows():
+    nonlocal inserted_total, skipped_duplicates
+    if not pending_rows:
+      return
+
+    df = pd.DataFrame(
+      pending_rows,
+      columns=["source", "group1", "group2", "interaction_label", "affinity_nm", "affinity_pkd"],
+    )
+    con.register("source_rows", df)
+    try:
+      before = con.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
+      con.execute(
+        """
+        INSERT INTO samples(source, group1, group2, interaction_label, affinity_nm, affinity_pkd)
+        SELECT source, group1, group2, interaction_label, affinity_nm, affinity_pkd
+        FROM source_rows
+        ON CONFLICT(group1, group2) DO NOTHING
+        """
+      )
+      after = con.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
+    finally:
+      con.unregister("source_rows")
+
+    inserted = after - before
+    inserted_total += inserted
+    skipped_duplicates += len(pending_rows) - inserted
+    pending_rows.clear()
 
   for entry in spec.loader():
     try:
@@ -192,10 +208,10 @@ def _insert_source_rows(con: duckdb.DuckDBPyConnection, spec: SourceSpec):
       affinity_pkd = affinity_nm_to_pkd(affinity_nm)
     except Exception as exc:
       skipped_invalid += 1
-      print(f"Source={spec.name} skipped_invalid_entry error={exc}")
+      print(f"Source={spec.name} skipped_invalid_entry error={exc}", flush=True)
       continue
 
-    inserted_rows.append(
+    pending_rows.append(
       (
         entry.source or spec.name,
         group1,
@@ -205,33 +221,14 @@ def _insert_source_rows(con: duckdb.DuckDBPyConnection, spec: SourceSpec):
         affinity_pkd,
       )
     )
+    processed_total += 1
 
-  if not inserted_rows:
-    print(f"Source={spec.name} inserted=0 skipped_invalid={skipped_invalid} skipped_duplicate={skipped_duplicates}")
-    return
+    if len(pending_rows) >= SOURCE_INSERT_BATCH_SIZE:
+      flush_pending_rows()
+      print(f"Source={spec.name} processed={processed_total} inserted={inserted_total} skipped_duplicate={skipped_duplicates}", flush=True)
 
-  df = pd.DataFrame(
-    inserted_rows,
-    columns=["source", "group1", "group2", "interaction_label", "affinity_nm", "affinity_pkd"],
-  )
-  con.register("source_rows", df)
-  try:
-    before = con.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
-    con.execute(
-      """
-      INSERT INTO samples(source, group1, group2, interaction_label, affinity_nm, affinity_pkd)
-      SELECT source, group1, group2, interaction_label, affinity_nm, affinity_pkd
-      FROM source_rows
-      ON CONFLICT(group1, group2) DO NOTHING
-      """
-    )
-    after = con.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
-  finally:
-    con.unregister("source_rows")
-
-  inserted = after - before
-  skipped_duplicates = len(inserted_rows) - inserted
-  print(f"Source={spec.name} inserted={inserted} skipped_invalid={skipped_invalid} skipped_duplicate={skipped_duplicates}")
+  flush_pending_rows()
+  print(f"Source={spec.name} inserted={inserted_total} skipped_invalid={skipped_invalid} skipped_duplicate={skipped_duplicates}", flush=True)
 
 
 def _print_dataset_audit(con: duckdb.DuckDBPyConnection):
@@ -256,7 +253,8 @@ def _print_dataset_audit(con: duckdb.DuckDBPyConnection):
   print(
     "Dataset audit "
     f"rows={total_rows} sources={total_sources} "
-    f"interaction_labels={interaction_labels} affinity_labels={affinity_labels}"
+    f"interaction_labels={interaction_labels} affinity_labels={affinity_labels}",
+    flush=True,
   )
 
 
@@ -276,7 +274,7 @@ def aggregate(source_specs: Sequence[SourceSpec], out_db: Path):
     for spec in source_specs:
       _insert_source_rows(con, spec)
     total = con.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
-    print(f"Aggregation complete: {total} rows written to {out_db}")
+    print(f"Aggregation complete: {total} rows written to {out_db}", flush=True)
     _print_dataset_audit(con)
   finally:
     con.close()
