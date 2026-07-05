@@ -386,6 +386,7 @@ Two curated sources are currently supported:
 
 - **PPB‑Affinity (filtered)** – a comprehensive dataset of crystal structures of protein–protein complexes, including binding affinities, receptor chains, and ligand chains. It is the largest publicly available PPB dataset, combining receptor protein chain, ligand protein chain, and experimentally measured affinity values.
 - **SKEMPI v2.0** – a database of binding free‑energy and kinetic changes upon mutation for protein–protein interactions with solved structures. Version 2.0 contains data for 7,085 mutations, recording thermodynamic parameters, kinetic rate constants, and, where available, cleaned crystal structures of the complexes.
+- **IntAct** – a molecular interaction database used here via the bulk archive export. The loader reads the local ZIP file, parses positive and negative MITAB exports, and resolves interactor sequences from the bundled IntAct FASTA.
 
 These sources were chosen because they provide sequence‑resolvable protein chains and measured affinities, which map naturally to the `group1`/`group2` schema used by the aggregation pipeline. Binary interaction labels are inferred to be positive for these curated datasets.
 
@@ -412,26 +413,21 @@ mkdir -p data/raw
 
 ### 2. Get the PPB‑Affinity (filtered) dataset
 
-Go to the PPB‑Affinity dataset page on Hugging Face and download the file `filtered.csv` from the files → filtered section. Save it as:
+Download the filtered PPB-Affinity CSV directly from Hugging Face and save it under the filename expected by the loader:
 
-```
-data/raw/ppb_affinity_filtered.csv
+```bash
+wget -O data/raw/ppb_affinity_filtered.csv https://huggingface.co/datasets/proteinea/ppb_affinity/resolve/main/filtered.csv
 ```
 
 This CSV provides pre‑extracted "Ligand Sequences" and "Receptor Sequences" columns, and a "KD(M)" column containing dissociation constants in molar units. If there are multiple chains on either side, the sequences are comma‑separated.
 
 ### 3. Get the SKEMPI v2.0 dataset
 
-Visit the SKEMPI v2.0 website and follow the "Download" link to obtain two files:
+Download the SKEMPI v2.0 CSV and cleaned PDB archive directly into `data/raw/`:
 
-- `skempi_v2.csv` – contains affinities, mutation information, and PDB identifiers.
-- `SKEMPI2_PDBs.tgz` – a tarball of cleaned PDB structures.
-
-After downloading, place them in `data/raw/` with the following names:
-
-```
-data/raw/skempi_v2.csv
-data/raw/SKEMPI2_PDBs.tgz
+```bash
+wget -O data/raw/skempi_v2.csv https://life.bsc.es/pid/skempi2/database/download/skempi_v2.csv
+wget -O data/raw/SKEMPI2_PDBs.tgz https://life.bsc.es/pid/skempi2/database/download/SKEMPI2_PDBs.tgz
 ```
 
 Optional — unpack the PDB archive for inspection:
@@ -441,6 +437,16 @@ tar -xzf data/raw/SKEMPI2_PDBs.tgz -C data/raw
 ```
 
 SKEMPI v2.0 contains data on thermodynamic parameters and kinetic rate constants for protein–protein interactions with solved structures, with a total of 7,085 mutation entries.
+
+### 4. Get the IntAct bulk archive
+
+Download the current IntAct bulk export from EBI and save it under `data/raw/` with the date-stamped filename expected by `config.py`:
+
+```bash
+wget -O data/raw/intact_all_2026_07_03.zip https://ftp.ebi.ac.uk/pub/databases/intact/current/all.zip
+```
+
+The IntAct loader expects this ZIP to contain the positive MITAB export, negative MITAB export, and bundled FASTA file used for sequence resolution.
 
 ---
 

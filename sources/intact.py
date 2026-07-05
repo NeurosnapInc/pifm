@@ -108,12 +108,9 @@ def iter_intact() -> Iterator[InteractionEntry]:
   print(f"Source=intact resolved_pairs={resolved} unresolved_pairs={unresolved} filtered={filtered}")
 """IntAct bulk archive source loader.
 
-This module parses the IntAct `all.zip` bulk export downloaded from:
-https://ftp.ebi.ac.uk/pub/databases/intact/current/all.zip
-
 The local archive is configured by `config.INTACT_ARCHIVE_PATH` and is expected
 to contain the MITAB positive/negative exports plus the bundled IntAct FASTA
-sequence file.
+sequence file. See `README.md` for download instructions.
 """
 
 import csv
