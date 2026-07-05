@@ -397,10 +397,9 @@ package that yields `InteractionEntry` objects; loaders are registered (in
 priority order) by `sources.build_source_specs()` and consumed by
 `aggregate_data.py`.
 
-Raw downloads live under `./data/raw/` (git-ignored). Some sources use a
-source-specific subdirectory when they require multiple files. Loaders are
-defensive: if their files are absent they print a download hint and yield
-nothing, so `python aggregate_data.py` always runs.
+Raw downloads live under `./data/raw/` (git-ignored). Loaders are defensive: if
+their files are absent they print a download hint and yield nothing, so
+`python aggregate_data.py` always runs.
 
 Prepare the raw data directory:
 
@@ -424,8 +423,7 @@ accessions are skipped. Swiss-Prot is a good default:
 
 ```bash
 mkdir -p data/raw/uniprot
-wget -P data/raw/uniprot \
-  https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
+wget -P data/raw/uniprot https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
 ```
 
 ## Registered sources
@@ -447,8 +445,7 @@ The filtered PPB-Affinity CSV provides pre-extracted `Ligand Sequences`,
 expected by the loader:
 
 ```bash
-wget -O data/raw/ppb_affinity_filtered.csv \
-  https://huggingface.co/datasets/proteinea/ppb_affinity/resolve/main/filtered.csv
+wget -O data/raw/ppb_affinity_filtered.csv https://huggingface.co/datasets/proteinea/ppb_affinity/resolve/main/filtered.csv
 ```
 
 ### SKEMPI v2.0 (protein–protein affinities, wild-type + mutants, positives)
@@ -459,12 +456,8 @@ records) and applies each cleaned point mutation to produce the mutant complex.
 Both the CSV and the PDB bundle are required:
 
 ```bash
-mkdir -p data/raw/skempi
-wget -O data/raw/skempi/skempi_v2.csv \
-  https://life.bsc.es/pid/skempi2/database/download/skempi_v2.csv
-wget -O data/raw/skempi/SKEMPI2_PDBs.tgz \
-  https://life.bsc.es/pid/skempi2/database/download/SKEMPI2_PDBs.tgz
-tar -xzf data/raw/skempi/SKEMPI2_PDBs.tgz -C data/raw/skempi   # -> data/raw/skempi/PDBs/
+wget -O data/raw/skempi_v2.csv https://life.bsc.es/pid/skempi2/database/download/skempi_v2.csv
+curl -L https://life.bsc.es/pid/skempi2/database/download/SKEMPI2_PDBs.tgz | tar -xz -C data/raw   # -> data/raw/PDBs/
 ```
 
 Yields ~348 wild-type complexes and ~7,000 mutant complexes (Kd → pKd). Both
@@ -474,8 +467,7 @@ form). Rows whose mutation numbering does not match the structure are skipped.
 ### IntAct (physical PPIs, positives + negatives)
 
 ```bash
-wget -O data/raw/intact_all_2026_07_03.zip \
-  https://ftp.ebi.ac.uk/pub/databases/intact/current/all.zip
+wget -O data/raw/intact_all_2026_07_03.zip https://ftp.ebi.ac.uk/pub/databases/intact/current/all.zip
 ```
 
 The IntAct loader reads the local bulk ZIP configured by `config.INTACT_ARCHIVE_PATH`.
@@ -486,8 +478,7 @@ the bundled IntAct FASTA, so no separate UniProt FASTA is required for IntAct.
 
 ```bash
 mkdir -p data/raw/negatome
-wget -P data/raw/negatome \
-  https://mips.helmholtz-muenchen.de/proj/ppi/negatome/combined_stringent.txt
+wget -P data/raw/negatome https://mips.helmholtz-muenchen.de/proj/ppi/negatome/combined_stringent.txt
 ```
 
 The `combined_stringent` list excludes pairs seen interacting in IntAct, making
@@ -511,9 +502,8 @@ evidence, and ships its own sequences so no UniProt map is needed.
 ```bash
 mkdir -p data/raw/string
 # Example: E. coli K-12 (taxid 511145). Repeat for each species you want.
-BASE=https://stringdb-downloads.org/download
-wget -P data/raw/string $BASE/protein.physical.links.detailed.v12.0/511145.protein.physical.links.detailed.v12.0.txt.gz
-wget -P data/raw/string $BASE/protein.sequences.v12.0/511145.protein.sequences.v12.0.fa.gz
+wget -P data/raw/string https://stringdb-downloads.org/download/protein.physical.links.detailed.v12.0/511145.protein.physical.links.detailed.v12.0.txt.gz
+wget -P data/raw/string https://stringdb-downloads.org/download/protein.sequences.v12.0/511145.protein.sequences.v12.0.fa.gz
 ```
 
 ### Literature-derived affinity (user-provided)
