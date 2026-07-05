@@ -42,7 +42,7 @@ Rather than training an entirely new protein language model, this project builds
 
 ---
 
-# Objectives
+## Objectives
 
 Primary objectives:
 
@@ -60,7 +60,7 @@ Secondary objectives:
 
 ---
 
-# Motivation
+## Motivation
 
 Protein property prediction can be solved effectively using pooled protein embeddings from pretrained protein language models.
 
@@ -75,9 +75,9 @@ This project investigates architectures capable of learning interactions between
 
 ---
 
-# Proposed Architecture
+## Proposed Architecture
 
-## High-Level Pipeline
+### High-Level Pipeline
 
 ```
 Protein Group A
@@ -94,7 +94,7 @@ Protein Group A
         ▼
  Group A Embedding
 
-                     ────────────────
+────────────────
 
 Protein Group B
         │
@@ -110,22 +110,22 @@ Protein Group B
         ▼
  Group B Embedding
 
-                     ────────────────
+────────────────
 
-     Pairwise Interaction Module
-                │
-                ▼
+ Pairwise Interaction Module
+       │
+       ▼
 
-        Prediction Head
-      ┌───────────────┐
-      │ Interaction   │
-      │ Affinity      │
-      └───────────────┘
+ Prediction Head
+┌───────────────┐
+│ Interaction   │
+│ Affinity      │
+└───────────────┘
 ```
 
 ---
 
-# Stage 1: Protein Encoding
+### Stage 1: Protein Encoding
 
 Each protein sequence is independently embedded using ProstT5.
 
@@ -144,42 +144,24 @@ Advantages:
 
 Each protein produces residue embeddings.
 
----
-
-# Stage 2: Chain Embedding
+### Stage 2: Chain Embedding
 
 Residue embeddings must be converted into a fixed-size chain representation.
 
 Initial baseline:
-
 - Mean pooling
 
 Future alternatives are listed below.
-
 Result:
-
 ```
-Protein Sequence
-
-↓
-
-Residue Embeddings
-
-↓
-
-Chain Embedding
+Protein Sequence → Residue Embeddings → Chain Embedding
 ```
 
----
-
-# Stage 3: Protein Group Representation
+### Stage 3: Protein Group Representation
 
 Each interaction side consists of one or more proteins.
-
 Example:
-
 Group A
-
 ```
 Protein A
 Protein B
@@ -187,7 +169,6 @@ Protein C
 ```
 
 Group B
-
 ```
 Protein D
 Protein E
@@ -213,7 +194,7 @@ This avoids introducing arbitrary ordering bias.
 
 ---
 
-# Stage 4: Interaction Modeling
+### Stage 4: Interaction Modeling
 
 Simply concatenating two pooled embeddings may discard important chain-level interactions.
 
@@ -249,19 +230,17 @@ where * denotes element-wise multiplication.
 
 These pairwise interaction embeddings are then pooled before final prediction.
 
----
-
-# Stage 5: Prediction Head
+### Stage 5: Prediction Head
 
 Outputs may include:
 
-## Binary Classification
+#### Binary Classification
 
 ```
 P(interaction)
 ```
 
-## Regression
+#### Regression
 
 Predict
 
@@ -284,9 +263,7 @@ Potential future outputs:
 - interface confidence
 - residue attribution
 
----
-
-# Why Not Concatenate Chains?
+#### Why Not Concatenate Chains?
 
 One possible architecture is
 
@@ -312,9 +289,9 @@ This remains an experimental direction but is not currently the primary architec
 
 ---
 
-# Training Strategy
+## Training Strategy
 
-## Phase 1
+### Phase 1
 
 Freeze ProstT5 completely.
 
@@ -324,7 +301,7 @@ Train only:
 - interaction module
 - prediction head
 
-## Phase 2
+### Phase 2
 
 Enable adapter training.
 
@@ -337,9 +314,7 @@ while leaving the backbone frozen.
 
 This should improve performance while remaining lightweight.
 
----
-
-# Multi-Task Learning
+### Multi-Task Learning
 
 Rather than training only affinity regression, jointly train:
 
@@ -353,44 +328,7 @@ Advantages:
 - More useful embeddings
 - Handles noisy affinity labels better
 
----
-
-# Dataset Considerations
-
-Potential data sources include:
-
-- SKEMPI
-- BioLiP
-- Negatome
-- IntAct
-- DIP
-- STRING (carefully filtered)
-- literature-derived affinity datasets
-
-Need to carefully distinguish:
-
-Positive interactions
-
-vs
-
-Negative interactions
-
-Affinity labels
-
-vs
-
-Binary interaction labels
-
-
-Two curated sources are currently supported:
-
-- **PPB‑Affinity (filtered)** – a comprehensive dataset of crystal structures of protein–protein complexes, including binding affinities, receptor chains, and ligand chains. It is the largest publicly available PPB dataset, combining receptor protein chain, ligand protein chain, and experimentally measured affinity values.
-- **SKEMPI v2.0** – a database of binding free‑energy and kinetic changes upon mutation for protein–protein interactions with solved structures. Version 2.0 contains data for 7,085 mutations, recording thermodynamic parameters, kinetic rate constants, and, where available, cleaned crystal structures of the complexes.
-- **IntAct** – a molecular interaction database used here via the bulk archive export. The loader reads the local ZIP file, parses positive and negative MITAB exports, and resolves interactor sequences from the bundled IntAct FASTA.
-
-These sources were chosen because they provide sequence‑resolvable protein chains and measured affinities, which map naturally to the `group1`/`group2` schema used by the aggregation pipeline. Binary interaction labels are inferred to be positive for these curated datasets.
-
-# Data Sources & Downloads
+## Data Sources & Downloads
 
 Aggregation is source-driven. Each dataset has a loader in the `sources/`
 package that yields `InteractionEntry` objects; loaders are registered (in
@@ -414,7 +352,7 @@ python aggregate_data.py            # writes data/aggregated/aggregated.duckdb
 duckdb data/aggregated/aggregated.duckdb -ui   # inspect
 ```
 
-## Sequence resolution (required for Negatome / DIP)
+### Sequence resolution (required for Negatome / DIP)
 
 These sources distribute interactions as **UniProt accession pairs**, not
 sequences. Provide one or more UniProt FASTA files in `data/raw/uniprot/` and
@@ -426,7 +364,7 @@ mkdir -p data/raw/uniprot
 wget -P data/raw/uniprot https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
 ```
 
-## Registered sources
+### Registered sources
 
 | Source | Labels | Pos/Neg | Download |
 |---|---|---|---|
@@ -540,249 +478,94 @@ sequence, could be extracted for the sequence pipeline in the meantime.)
 
 ---
 
-# Inference Workflow
-
+## Inference Workflow
 ```
-Protein Sequence
-
-↓
-
-ProstT5
-
-↓
-
-Chain Embedding
-
-↓
-
-Cache
+Protein Sequence → ProstT5 → Chain Embedding → Cache
 ```
 
 Once cached, interaction prediction becomes extremely inexpensive.
 
 This enables:
-
 - massive interaction screening
 - virtual proteome-wide searches
 - repeated affinity prediction without recomputing embeddings
 
----
 
-# Initial Baseline Model
-
+## Initial Baseline Model
+To establish a simple benchmark before adding more sophisticated architectures.
 ```
-Protein
-
-↓
-
-Frozen ProstT5
-
-↓
-
-Mean Pool
-
-↓
-
-Group Mean Pool
-
-↓
-
-MLP
-
-↓
-
-Interaction + pKd
+Protein → Frozen ProstT5 → Mean Pool → Group Mean Pool → MLP → Interaction + pKd
 ```
 
-This establishes a simple benchmark before adding more sophisticated architectures.
-
----
-
-# Future Architecture
+## Future Architecture
 
 ```
-Protein
-
-↓
-
-ProstT5 + Adapters
-
-↓
-
-Attention Pool
-
-↓
-
-Set Encoder
-
-↓
-
-Pairwise Interaction Network
-
-↓
-
-MLP
-
-↓
-
-Interaction + pKd
+Protein → ProstT5 + Adapters → Attention Pool → Set Encoder → Pairwise Interaction Network → MLP → Interaction + pKd
 ```
 
----
-
-# TODO / Experiments
-
-## Protein Encoder
-
-- [ ] ProstT5
-- [ ] ESM2
-- [ ] ProtT5
-- [ ] Future larger protein language models
-
----
-
-## Fine-Tuning Strategy
-
+## TODO / Experiments
+### Fine-Tuning Strategy
 - [ ] Frozen backbone
 - [ ] LoRA
 - [ ] Adapters
-- [ ] Full fine-tuning
 
----
-
-## Residue → Chain Pooling
-
+### Residue → Chain Pooling
 - [ ] Mean pooling
 - [ ] Max pooling
 - [ ] Attention pooling
 - [ ] CLS token (if available)
 - [ ] Learned weighted pooling
 
----
-
-## Group Pooling
-
+### Group Pooling
 Evaluate permutation-invariant approaches:
-
 - [ ] Mean pooling
 - [ ] Max pooling
 - [ ] Attention pooling
 - [ ] DeepSets
 - [ ] Set Transformer
 
----
-
-## Interaction Module
-
+### Interaction Module
 Test:
-
 - [ ] Pairwise interaction features
 - [ ] Cross-attention between groups
 - [ ] Bilinear interaction layers
 - [ ] Small Transformer operating on chain embeddings
 
----
-
-## Output Heads
-
+### Output Heads
 Evaluate:
-
 - [ ] Binary interaction
 - [ ] pKd regression
 - [ ] Joint multitask training
 - [ ] Uncertainty estimation
 
----
-
-## Input Formatting Experiments
-
-- [ ] Independent protein encoding
-- [ ] Chain delimiter token
-- [ ] Group delimiter token
-- [ ] Entire complex encoded jointly
-- [ ] Learned separator embeddings
-
----
-
-## Data Augmentation
-
-- [ ] Random chain order shuffling
+### Data Augmentation
 - [ ] Sequence masking
 - [ ] Residue dropout
 - [ ] Homology filtering
 - [ ] Hard negative mining
 
----
-
-## Loss Functions
-
+### Loss Functions
 - [ ] BCE
 - [ ] MSE
 - [ ] Huber
 - [ ] Contrastive loss
 - [ ] Multi-task weighted losses
 
----
-
-## Evaluation Metrics
-
+### Evaluation Metrics
 Classification:
-
 - [ ] ROC-AUC
 - [ ] PR-AUC
 - [ ] F1
 - [ ] Accuracy
 
 Regression:
-
 - [ ] Pearson
 - [ ] Spearman
 - [ ] RMSE
 - [ ] MAE
 - [ ] R²
 
----
-
-## Speed Benchmarks
-
-Benchmark against:
-
-- [ ] AlphaFold-Multimer
-- [ ] FoldDock
-- [ ] Existing PPI embedding models
-- [ ] Sequence-only baselines
-
-Metrics:
-
-- inference time
-- GPU memory
-- throughput
-- embeddings/sec
-
----
-
-# Long-Term Vision
-
-The long-term goal is to create a general-purpose interaction foundation model capable of rapidly scoring interactions between arbitrary biomolecular systems.
-
-Future extensions may include:
-
-- protein-protein interactions
-- antibody-antigen binding
-- peptide binding
-- enzyme-substrate interactions
-- protein-ligand interactions
-- protein-DNA interactions
-- protein-RNA interactions
-- interface residue prediction
-- mutation affinity prediction (ΔΔG)
-- binder screening
-- affinity maturation
-- interaction network analysis
-
-By leveraging pretrained protein language models together with lightweight interaction-specific architectures, this project aims to achieve near state-of-the-art predictive performance while remaining fast enough for large-scale computational screening and practical deployment.
-
-# Project Inspiration
+## Project Inspiration
 
 This project builds upon our previous work on **Prot2Prop**, a lightweight framework for multitask protein property prediction using pretrained protein language models.
 
