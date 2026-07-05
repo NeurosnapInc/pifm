@@ -397,13 +397,6 @@ This enables:
 - virtual proteome-wide searches
 - repeated affinity prediction without recomputing embeddings
 
-
-## Initial Baseline Model
-To establish a simple benchmark before adding more sophisticated architectures.
-```
-Protein → Frozen ProstT5 → Mean Pool → Group Mean Pool → MLP → Interaction + pKd
-```
-
 ## Future Architecture
 ```
 Protein → ProstT5 + Adapters → Attention Pool → Set Encoder → Pairwise Interaction Network → MLP → Interaction + pKd
