@@ -413,10 +413,10 @@ mkdir -p data/raw
 
 ### 2. Get the PPB‑Affinity (filtered) dataset
 
-Go to the PPB‑Affinity dataset page on Hugging Face and download the file `filtered.csv` from the files → filtered section. Save it as:
+Download the filtered PPB-Affinity CSV directly from Hugging Face and save it under the filename expected by the loader:
 
-```
-data/raw/ppb_affinity_filtered.csv
+```bash
+wget -O data/raw/ppb_affinity_filtered.csv https://huggingface.co/datasets/proteinea/ppb_affinity/resolve/main/filtered.csv
 ```
 
 This CSV provides pre‑extracted "Ligand Sequences" and "Receptor Sequences" columns, and a "KD(M)" column containing dissociation constants in molar units. If there are multiple chains on either side, the sequences are comma‑separated.
