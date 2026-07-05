@@ -106,10 +106,10 @@ Protein Group B
        ▼
 
  Prediction Head
-┌───────────────┐
-│ Interaction   │
-│ Affinity      │
-└───────────────┘
+┌────────────────┐
+│ Interaction    │
+│ Affinity (pKd) │
+└────────────────┘
 ```
 
 ## Training Strategy
@@ -246,11 +246,6 @@ This enables:
 - massive interaction screening
 - virtual proteome-wide searches
 - repeated affinity prediction without recomputing embeddings
-
-## Future Architecture
-```
-Protein → ProstT5 + Adapters → Attention Pool → Set Encoder → Pairwise Interaction Network → MLP → Interaction + pKd
-```
 
 ## TODO / Experiments
 ### Fine-Tuning Strategy
