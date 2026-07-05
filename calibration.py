@@ -13,6 +13,7 @@ from sklearn.metrics import (
   mean_absolute_error,
   mean_squared_error,
   precision_score,
+  r2_score,
   recall_score,
   roc_auc_score,
 )
@@ -121,6 +122,40 @@ def _label_ratio_string(labels):
   return " ".join(f"{label}:{counts[label] / total:.3f}" for label in sorted(counts))
 
 
+def _pearson_corr(labels, preds):
+  if len(labels) < 2:
+    return None
+  labels_tensor = torch.tensor(labels, dtype=torch.float)
+  preds_tensor = torch.tensor(preds, dtype=torch.float)
+  centered_labels = labels_tensor - labels_tensor.mean()
+  centered_preds = preds_tensor - preds_tensor.mean()
+  denominator = torch.sqrt(centered_labels.pow(2).sum() * centered_preds.pow(2).sum())
+  if denominator.item() == 0.0:
+    return None
+  return (centered_labels * centered_preds).sum().div(denominator).item()
+
+
+def _average_ranks(values):
+  indexed = sorted(enumerate(values), key=lambda item: item[1])
+  ranks = [0.0] * len(values)
+  start = 0
+  while start < len(indexed):
+    end = start + 1
+    while end < len(indexed) and indexed[end][1] == indexed[start][1]:
+      end += 1
+    average_rank = (start + end - 1) / 2.0 + 1.0
+    for idx in range(start, end):
+      ranks[indexed[idx][0]] = average_rank
+    start = end
+  return ranks
+
+
+def _spearman_corr(labels, preds):
+  if len(labels) < 2:
+    return None
+  return _pearson_corr(_average_ranks(labels), _average_ranks(preds))
+
+
 def classification_report(labels, preds, scores):
   report = {
     "acc": accuracy_score(labels, preds),
@@ -143,14 +178,21 @@ def classification_report(labels, preds, scores):
 def regression_report(labels, preds):
   labels_tensor = torch.tensor(labels, dtype=torch.float)
   preds_tensor = torch.tensor(preds, dtype=torch.float)
-  return {
+  report = {
     "label_mean": labels_tensor.mean().item(),
     "label_std": labels_tensor.std(unbiased=False).item(),
     "pred_mean": preds_tensor.mean().item(),
     "pred_std": preds_tensor.std(unbiased=False).item(),
     "mae": mean_absolute_error(labels, preds),
     "rmse": mean_squared_error(labels, preds) ** 0.5,
+    "pearson": _pearson_corr(labels, preds),
+    "spearman": _spearman_corr(labels, preds),
   }
+  try:
+    report["r2"] = r2_score(labels, preds)
+  except ValueError:
+    report["r2"] = None
+  return report
 
 
 def format_posthoc_classification_rows(predictions, task_metas):
@@ -213,6 +255,9 @@ def format_posthoc_regression_rows(predictions, task_metas):
         _format_float(report["pred_std"]),
         _format_float(report["mae"]),
         _format_float(report["rmse"]),
+        _format_float(report["pearson"]),
+        _format_float(report["spearman"]),
+        _format_float(report["r2"]),
       ]
     )
   return rows

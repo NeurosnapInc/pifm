@@ -222,6 +222,9 @@ def main():
           _format_float(report["pred_std"]),
           _format_float(report["mae"]),
           _format_float(report["rmse"]),
+          _format_float(report["pearson"]),
+          _format_float(report["spearman"]),
+          _format_float(report["r2"]),
         ]
       )
 
@@ -235,7 +238,7 @@ def main():
   print(
     _format_table(
       "Regression Tasks",
-      ["task", "n", "label_mean", "label_std", "pred_mean", "pred_std", "mae", "rmse"],
+      ["task", "n", "label_mean", "label_std", "pred_mean", "pred_std", "mae", "rmse", "pearson", "spearman", "r2"],
       regression_rows,
     )
   )
@@ -285,6 +288,9 @@ def main():
             _format_float(report["pred_std"]),
             _format_float(report["mae"]),
             _format_float(report["rmse"]),
+            _format_float(report["pearson"]),
+            _format_float(report["spearman"]),
+            _format_float(report["r2"]),
           ]
         )
 
@@ -298,7 +304,7 @@ def main():
     print(
       _format_table(
         "Checkpoint Regression Calibration Applied",
-        ["task", "cal_n", "slope", "intercept", "pred_mean", "pred_std", "mae", "rmse"],
+        ["task", "cal_n", "slope", "intercept", "pred_mean", "pred_std", "mae", "rmse", "pearson", "spearman", "r2"],
         checkpoint_regression_rows,
       )
     )
@@ -313,7 +319,7 @@ def main():
     print(
       _format_table(
         "Post-hoc Regression Calibration (fit on internal half, report on held-out half)",
-        ["task", "cal_n", "rep_n", "slope", "intercept", "pred_mean", "pred_std", "mae", "rmse"],
+        ["task", "cal_n", "rep_n", "slope", "intercept", "pred_mean", "pred_std", "mae", "rmse", "pearson", "spearman", "r2"],
         format_posthoc_regression_rows(predictions, task_metas),
       )
     )
