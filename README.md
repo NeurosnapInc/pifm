@@ -423,16 +423,11 @@ This CSV provides pre‑extracted "Ligand Sequences" and "Receptor Sequences" co
 
 ### 3. Get the SKEMPI v2.0 dataset
 
-Visit the SKEMPI v2.0 website and follow the "Download" link to obtain two files:
+Download the SKEMPI v2.0 CSV and cleaned PDB archive directly into `data/raw/`:
 
-- `skempi_v2.csv` – contains affinities, mutation information, and PDB identifiers.
-- `SKEMPI2_PDBs.tgz` – a tarball of cleaned PDB structures.
-
-After downloading, place them in `data/raw/` with the following names:
-
-```
-data/raw/skempi_v2.csv
-data/raw/SKEMPI2_PDBs.tgz
+```bash
+wget -O data/raw/skempi_v2.csv https://life.bsc.es/pid/skempi2/database/download/skempi_v2.csv
+wget -O data/raw/SKEMPI2_PDBs.tgz https://life.bsc.es/pid/skempi2/database/download/SKEMPI2_PDBs.tgz
 ```
 
 Optional — unpack the PDB archive for inspection:
