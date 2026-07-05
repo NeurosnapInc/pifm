@@ -47,7 +47,6 @@ from model import (
   unwrap_model,
 )
 
-
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 AMP_ENABLED = DEVICE.type == "cuda"
 COMPILE_MODEL = DEVICE.type == "cuda"
@@ -103,10 +102,7 @@ def _compute_sample_weights(split_payload, task_order):
   weights = torch.tensor(sample_weights, dtype=torch.double)
   weights /= weights.sum()
 
-  task_label_counts = {
-    task_name: int(task_counts[idx].item())
-    for idx, task_name in enumerate(task_order)
-  }
+  task_label_counts = {task_name: int(task_counts[idx].item()) for idx, task_name in enumerate(task_order)}
   return weights, task_label_counts
 
 
