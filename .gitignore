@@ -5,3 +5,6 @@ pifm.egg-info
 # Raw + processed datasets (downloaded locally, never committed)
 data/
 intact_all_2026_07_03.zip
+
+# temporary - remove later
+PAPER.md
