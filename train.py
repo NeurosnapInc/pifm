@@ -5,6 +5,7 @@ ProstT5 backbone and lightweight adapter fine-tuning.
 
 import math
 import random
+import warnings
 from collections import Counter
 from datetime import date
 from pathlib import Path
@@ -129,6 +130,9 @@ def _compute_multitask_loss(outputs, raw_labels, normalized_labels, label_mask, 
 
   return torch.stack(task_losses).mean()
 
+
+# Suppress a repetitive torch.compile/inductor warning that spams tqdm output during training.
+warnings.filterwarnings("ignore", message="Online softmax is disabled.*", category=UserWarning)
 
 print("Loading multitask tokenized cache")
 if not TRAIN_CACHE_PATH.exists():
