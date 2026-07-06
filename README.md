@@ -141,6 +141,16 @@ python aggregate_data.py            # writes data/aggregated/aggregated.duckdb
 duckdb data/aggregated/aggregated.duckdb -ui   # inspect
 ```
 
+## GPU Memory Notes
+On standard 48 GB VRAM GPU instances, PyTorch may fail with a CUDA out-of-memory error even when enough total memory should be available, because a large amount of memory is reserved but unallocated by PyTorch. Set the allocator configuration before launching training or inference:
+
+```bash
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+```
+
+This can reduce allocator fragmentation and avoid failures such as attempts to allocate another large CUDA segment on a mostly reserved GPU. See the PyTorch CUDA memory management documentation for details:
+https://pytorch.org/docs/stable/notes/cuda.html#environment-variables
+
 ### Adding a new source
 1. Add `sources/<name>.py` with `def iter_<name>() -> Iterator[InteractionEntry]` (yield **sequences only**; set `interaction_label` and/or `affinity_nm`).
 2. Register a `SourceSpec` in `sources.build_source_specs()` — list position sets priority (earlier wins on duplicate canonical pairs).
