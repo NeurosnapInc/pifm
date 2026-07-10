@@ -16,6 +16,13 @@ SPLIT_SEED = GLOBAL_SEED
 TRAIN_FRACTION = 0.8
 VAL_FRACTION = 0.1
 TEST_FRACTION = 0.1
+SPLIT_STRATEGY = "cluster"  # "random", "protein", or "cluster"
+CLUSTER_MIN_SEQ_ID = 0.5
+CLUSTER_COVERAGE = 0.8
+MMSEQS_BINARY = "mmseqs"
+SEQUENCE_CLUSTER_FASTA_PATH = Path("data/tokenized/split_sequences.fasta")
+SEQUENCE_CLUSTER_TSV_PATH = Path("data/tokenized/split_sequence_clusters.tsv")
+SEQUENCE_CLUSTER_WORK_DIR = Path("data/tokenized/mmseqs_tmp")
 
 ### Tokenization
 MAX_LENGTH = 1024 * 2

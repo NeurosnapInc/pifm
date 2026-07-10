@@ -141,6 +141,25 @@ python aggregate_data.py            # writes data/aggregated/aggregated.duckdb
 duckdb data/aggregated/aggregated.duckdb -ui   # inspect
 ```
 
+## Tokenization & Splitting
+The default tokenizer uses a cluster-disjoint split (`SPLIT_STRATEGY = "cluster"`) rather than a random row split. This is important for PPI evaluation: no sequence cluster is allowed to appear in more than one of train/validation/test, reducing homology leakage between splits.
+
+Install MMseqs2 before tokenization:
+
+```bash
+conda install -c bioconda mmseqs2
+```
+
+Then run:
+
+```bash
+python tokenize_data.py
+```
+
+If `data/tokenized/split_sequence_clusters.tsv` is absent, `tokenize_data.py` writes `data/tokenized/split_sequences.fasta`, runs MMseqs2 clustering, and saves the resulting cluster assignments. The default threshold is `CLUSTER_MIN_SEQ_ID = 0.5` with `CLUSTER_COVERAGE = 0.8` in `config.py`.
+
+Rows whose participating protein clusters would land in different splits are dropped and reported as `dropped_cross_split`. This is intentional: keeping those rows would reintroduce cluster leakage.
+
 ## GPU Memory Notes
 On standard 48 GB VRAM GPU instances, PyTorch may fail with a CUDA out-of-memory error even when enough total memory should be available, because a large amount of memory is reserved but unallocated by PyTorch. Set the allocator configuration before launching training or inference:
 

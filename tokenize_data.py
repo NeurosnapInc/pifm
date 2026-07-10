@@ -3,8 +3,12 @@ Pre-tokenize the aggregated interaction-group DuckDB into multitask train,
 validation, and test caches.
 """
 
+import csv
+import hashlib
 import random
 import re
+import shutil
+import subprocess
 from typing import Dict, List
 
 import duckdb
@@ -13,9 +17,16 @@ from transformers import T5Tokenizer
 
 from config import (
   AGGREGATED_DB_PATH,
+  CLUSTER_COVERAGE,
+  CLUSTER_MIN_SEQ_ID,
   MAX_LENGTH,
+  MMSEQS_BINARY,
   MODEL_NAME,
+  SEQUENCE_CLUSTER_FASTA_PATH,
+  SEQUENCE_CLUSTER_TSV_PATH,
+  SEQUENCE_CLUSTER_WORK_DIR,
   SPLIT_SEED,
+  SPLIT_STRATEGY,
   TEST_FRACTION,
   TOKENIZED_DATA_DIR,
   TRAIN_FRACTION,
@@ -25,6 +36,7 @@ from config import (
 
 
 TOKENIZE_BATCH_SIZE = 128
+SUPPORTED_SPLIT_STRATEGIES = {"random", "protein", "cluster"}
 
 TASK_SPECS = {
   "interaction": {
@@ -65,6 +77,180 @@ def _empty_label_row(num_tasks: int):
   return [0.0] * num_tasks
 
 
+def _sequence_id(sequence: str) -> str:
+  return hashlib.sha256(sequence.encode("utf-8")).hexdigest()[:16]
+
+
+def _record_sequences(record) -> List[str]:
+  return record["group1_sequences"] + record["group2_sequences"]
+
+
+def _all_unique_sequences(records) -> List[str]:
+  return sorted({sequence for record in records for sequence in _record_sequences(record)})
+
+
+def _write_sequence_fasta(sequences: List[str], path):
+  path.parent.mkdir(parents=True, exist_ok=True)
+  with path.open("w") as handle:
+    for sequence in sequences:
+      handle.write(f">{_sequence_id(sequence)}\n{sequence}\n")
+
+
+def _read_cluster_assignments(path, valid_sequence_ids) -> Dict[str, str]:
+  assignments: Dict[str, str] = {}
+
+  with path.open(newline="") as handle:
+    sample = handle.read(4096)
+    handle.seek(0)
+    delimiter = "," if "," in sample and "\t" not in sample else "\t"
+    reader = csv.reader(handle, delimiter=delimiter)
+
+    for row in reader:
+      if not row or len(row) < 2:
+        continue
+
+      first = row[0].strip()
+      second = row[1].strip()
+      if first in {"cluster_id", "representative"} or second in {"sequence_id", "member"}:
+        continue
+
+      if second in valid_sequence_ids:
+        assignments[second] = first
+      elif first in valid_sequence_ids:
+        assignments[first] = second
+
+  missing = valid_sequence_ids - set(assignments)
+  if missing:
+    preview = ", ".join(sorted(missing)[:5])
+    raise ValueError(
+      f"Cluster assignment file {path} is missing {len(missing)} sequences. "
+      f"Examples: {preview}"
+    )
+
+  return assignments
+
+
+def _run_mmseqs_clustering(sequences: List[str]):
+  if shutil.which(MMSEQS_BINARY) is None:
+    raise RuntimeError(
+      f"SPLIT_STRATEGY='cluster' requires {MMSEQS_BINARY!r} or a precomputed "
+      f"cluster file at {SEQUENCE_CLUSTER_TSV_PATH}. Install MMseqs2 or provide "
+      "a two-column cluster TSV mapping cluster_id to sequence_id."
+    )
+
+  _write_sequence_fasta(sequences, SEQUENCE_CLUSTER_FASTA_PATH)
+  output_prefix = SEQUENCE_CLUSTER_TSV_PATH.with_suffix("")
+  SEQUENCE_CLUSTER_WORK_DIR.mkdir(parents=True, exist_ok=True)
+
+  command = [
+    MMSEQS_BINARY,
+    "easy-cluster",
+    str(SEQUENCE_CLUSTER_FASTA_PATH),
+    str(output_prefix),
+    str(SEQUENCE_CLUSTER_WORK_DIR),
+    "--min-seq-id",
+    str(CLUSTER_MIN_SEQ_ID),
+    "-c",
+    str(CLUSTER_COVERAGE),
+    "--cov-mode",
+    "0",
+  ]
+  subprocess.run(command, check=True)
+
+  generated_tsv = output_prefix.parent / f"{output_prefix.name}_cluster.tsv"
+  if not generated_tsv.exists():
+    raise FileNotFoundError(f"MMseqs2 did not create expected cluster TSV: {generated_tsv}")
+
+  generated_tsv.replace(SEQUENCE_CLUSTER_TSV_PATH)
+
+
+def _load_sequence_clusters(records) -> Dict[str, str]:
+  sequences = _all_unique_sequences(records)
+  sequence_to_id = {sequence: _sequence_id(sequence) for sequence in sequences}
+  valid_sequence_ids = set(sequence_to_id.values())
+
+  if not SEQUENCE_CLUSTER_TSV_PATH.exists():
+    print(
+      f"Cluster file not found at {SEQUENCE_CLUSTER_TSV_PATH}; running MMseqs2 "
+      f"min_seq_id={CLUSTER_MIN_SEQ_ID} coverage={CLUSTER_COVERAGE}"
+    )
+    _run_mmseqs_clustering(sequences)
+
+  id_to_cluster = _read_cluster_assignments(SEQUENCE_CLUSTER_TSV_PATH, valid_sequence_ids)
+  return {sequence: id_to_cluster[sequence_id] for sequence, sequence_id in sequence_to_id.items()}
+
+
+def _assign_units_to_splits(units: List[str], rng) -> Dict[str, str]:
+  shuffled_units = list(units)
+  rng.shuffle(shuffled_units)
+
+  n_total = len(shuffled_units)
+  n_train = int(TRAIN_FRACTION * n_total)
+  n_val = int(VAL_FRACTION * n_total)
+
+  assignments: Dict[str, str] = {}
+  for unit in shuffled_units[:n_train]:
+    assignments[unit] = "train"
+  for unit in shuffled_units[n_train:n_train + n_val]:
+    assignments[unit] = "validation"
+  for unit in shuffled_units[n_train + n_val:]:
+    assignments[unit] = "test"
+
+  return assignments
+
+
+def _split_records_random(records, rng):
+  indices = list(range(len(records)))
+  rng.shuffle(indices)
+
+  n_total = len(indices)
+  n_train = int(TRAIN_FRACTION * n_total)
+  n_val = int(VAL_FRACTION * n_total)
+  return {
+    "train": [records[i] for i in indices[:n_train]],
+    "validation": [records[i] for i in indices[n_train:n_train + n_val]],
+    "test": [records[i] for i in indices[n_train + n_val:]],
+  }, 0
+
+
+def _split_records_by_sequence_units(records, sequence_to_unit: Dict[str, str], rng):
+  units = sorted(set(sequence_to_unit.values()))
+  unit_to_split = _assign_units_to_splits(units, rng)
+  split_records = {"train": [], "validation": [], "test": []}
+  dropped_cross_split = 0
+
+  for record in records:
+    record_splits = {
+      unit_to_split[sequence_to_unit[sequence]]
+      for sequence in _record_sequences(record)
+    }
+    if len(record_splits) != 1:
+      dropped_cross_split += 1
+      continue
+    split_records[record_splits.pop()].append(record)
+
+  return split_records, dropped_cross_split
+
+
+def _split_records(records):
+  if SPLIT_STRATEGY not in SUPPORTED_SPLIT_STRATEGIES:
+    raise ValueError(
+      f"Unsupported SPLIT_STRATEGY={SPLIT_STRATEGY!r}. "
+      f"Expected one of {sorted(SUPPORTED_SPLIT_STRATEGIES)}."
+    )
+
+  rng = random.Random(SPLIT_SEED)
+  if SPLIT_STRATEGY == "random":
+    return _split_records_random(records, rng)
+
+  if SPLIT_STRATEGY == "protein":
+    sequence_to_unit = {sequence: sequence for sequence in _all_unique_sequences(records)}
+    return _split_records_by_sequence_units(records, sequence_to_unit, rng)
+
+  sequence_to_unit = _load_sequence_clusters(records)
+  return _split_records_by_sequence_units(records, sequence_to_unit, rng)
+
+
 def _compute_regression_stats(records, task_order, task_metas):
   means = torch.zeros(len(task_order), dtype=torch.float)
   stds = torch.ones(len(task_order), dtype=torch.float)
@@ -90,14 +276,7 @@ def _compute_regression_stats(records, task_order, task_metas):
 
 
 def _tokenize_unique_sequences(records, tokenizer) -> Dict[str, torch.Tensor]:
-  unique_sequences = sorted(
-    {
-      sequence
-      for record in records
-      for group in (record["group1_sequences"], record["group2_sequences"])
-      for sequence in group
-    }
-  )
+  unique_sequences = _all_unique_sequences(records)
   token_map: Dict[str, torch.Tensor] = {}
 
   for start in range(0, len(unique_sequences), TOKENIZE_BATCH_SIZE):
@@ -228,18 +407,7 @@ try:
   if not records:
     raise ValueError("No labeled records remained after filtering.")
 
-  indices = list(range(len(records)))
-  rng = random.Random(SPLIT_SEED)
-  rng.shuffle(indices)
-
-  n_total = len(indices)
-  n_train = int(TRAIN_FRACTION * n_total)
-  n_val = int(VAL_FRACTION * n_total)
-  split_records = {
-    "train": [records[i] for i in indices[:n_train]],
-    "validation": [records[i] for i in indices[n_train:n_train + n_val]],
-    "test": [records[i] for i in indices[n_train + n_val:]],
-  }
+  split_records, dropped_cross_split = _split_records(records)
 
   if len(split_records["train"]) == 0 or len(split_records["validation"]) == 0:
     raise ValueError("Train/validation split is empty; adjust dataset size or split fractions.")
@@ -248,7 +416,8 @@ try:
   token_map = _tokenize_unique_sequences(records, tokenizer)
 
   print(
-    f"Unique pairs: train={len(split_records['train'])} "
+    f"Split strategy={SPLIT_STRATEGY} dropped_cross_split={dropped_cross_split} "
+    f"pairs: train={len(split_records['train'])} "
     f"val={len(split_records['validation'])} test={len(split_records['test'])}"
   )
   for task_name in task_order:
@@ -282,6 +451,11 @@ try:
         "model_name": MODEL_NAME,
         "db_path": str(AGGREGATED_DB_PATH),
         "split_seed": SPLIT_SEED,
+        "split_strategy": SPLIT_STRATEGY,
+        "cluster_min_seq_id": CLUSTER_MIN_SEQ_ID if SPLIT_STRATEGY == "cluster" else None,
+        "cluster_coverage": CLUSTER_COVERAGE if SPLIT_STRATEGY == "cluster" else None,
+        "sequence_cluster_tsv_path": str(SEQUENCE_CLUSTER_TSV_PATH) if SPLIT_STRATEGY == "cluster" else None,
+        "dropped_cross_split": dropped_cross_split,
         "train_fraction": TRAIN_FRACTION,
         "val_fraction": VAL_FRACTION,
         "test_fraction": TEST_FRACTION,
