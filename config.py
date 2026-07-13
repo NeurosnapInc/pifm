@@ -39,6 +39,12 @@ PATIENCE = 3
 TRAINING_SEED = GLOBAL_SEED
 BATCH_SAMPLER_SEED = GLOBAL_SEED
 
+### Early Stopping / Checkpoint Selection
+MIN_CLASSIFICATION_VAL_LABELS = 100
+MIN_REGRESSION_VAL_LABELS = 100
+CLASSIFICATION_SELECTION_METRIC = "auroc"  # "auroc" or "balanced_accuracy"
+REGRESSION_SELECTION_METRIC = "normalized_mae"  # "normalized_mae" or "pearson"
+
 ### Architecture
 ADAPTER_DIM = 64
 DROPOUT = 0.1

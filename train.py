@@ -15,7 +15,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from sklearn.metrics import accuracy_score, f1_score, mean_absolute_error, mean_squared_error
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, mean_absolute_error, mean_squared_error, roc_auc_score
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import T5EncoderModel, get_linear_schedule_with_warmup
@@ -30,8 +30,12 @@ from config import (
   EPOCHS,
   EVAL_MAX_TOKENS_PER_BATCH,
   LR,
+  CLASSIFICATION_SELECTION_METRIC,
+  MIN_CLASSIFICATION_VAL_LABELS,
+  MIN_REGRESSION_VAL_LABELS,
   MODEL_NAME,
   PATIENCE,
+  REGRESSION_SELECTION_METRIC,
   REGRESSION_HEAD_HIDDEN,
   TRAIN_CACHE_PATH,
   TRAIN_MAX_TOKENS_PER_BATCH,
@@ -77,12 +81,67 @@ def _build_classification_loss(labels: torch.Tensor, mask: torch.Tensor):
 def _metric_from_preds(labels, preds, dtype: str) -> Tuple[str, float, Dict[str, float]]:
   if dtype == "bool":
     acc = accuracy_score(labels, preds)
+    bal_acc = balanced_accuracy_score(labels, preds)
     f1 = f1_score(labels, preds, zero_division=0)
-    return "f1", f1, {"acc": acc, "f1": f1}
+    return "f1", f1, {"acc": acc, "balanced_accuracy": bal_acc, "f1": f1}
 
   mae = mean_absolute_error(labels, preds)
   rmse = math.sqrt(mean_squared_error(labels, preds))
   return "mae", mae, {"mae": mae, "rmse": rmse}
+
+
+def _safe_auroc(labels, scores):
+  if len(set(labels)) < 2:
+    return None
+  return roc_auc_score(labels, scores)
+
+
+def _pearson_corr(labels, preds):
+  if len(labels) < 2:
+    return None
+
+  label_arr = np.asarray(labels, dtype=np.float64)
+  pred_arr = np.asarray(preds, dtype=np.float64)
+  label_std = label_arr.std()
+  pred_std = pred_arr.std()
+  if label_std == 0.0 or pred_std == 0.0:
+    return None
+  return float(np.corrcoef(label_arr, pred_arr)[0, 1])
+
+
+def _select_validation_metric(task_name, values, report, dtype: str):
+  """Return the early-stopping score for a task, or None if validation is underpowered."""
+  n_labels = len(values["labels"])
+
+  if dtype == "bool":
+    auroc = _safe_auroc(values["labels"], values["scores"])
+    report["auroc"] = auroc
+
+    if n_labels < MIN_CLASSIFICATION_VAL_LABELS:
+      return None, f"classification labels {n_labels} < {MIN_CLASSIFICATION_VAL_LABELS}"
+
+    if CLASSIFICATION_SELECTION_METRIC == "auroc":
+      if auroc is None:
+        return None, "AUROC undefined because validation has one class"
+      return auroc, "auroc"
+    if CLASSIFICATION_SELECTION_METRIC == "balanced_accuracy":
+      return report["balanced_accuracy"], "balanced_accuracy"
+    raise ValueError(f"Unsupported CLASSIFICATION_SELECTION_METRIC={CLASSIFICATION_SELECTION_METRIC!r}")
+
+  if n_labels < MIN_REGRESSION_VAL_LABELS:
+    return None, f"regression labels {n_labels} < {MIN_REGRESSION_VAL_LABELS}"
+
+  normalized_mae = mean_absolute_error(values["normalized_labels"], values["normalized_preds"])
+  pearson = _pearson_corr(values["labels"], values["preds"])
+  report["normalized_mae"] = normalized_mae
+  report["pearson"] = pearson
+  if REGRESSION_SELECTION_METRIC == "normalized_mae":
+    return -normalized_mae, "negative_normalized_mae"
+  if REGRESSION_SELECTION_METRIC == "pearson":
+    if pearson is None:
+      return None, "Pearson undefined because validation labels/predictions have zero variance"
+    return pearson, "pearson"
+  raise ValueError(f"Unsupported REGRESSION_SELECTION_METRIC={REGRESSION_SELECTION_METRIC!r}")
 
 
 def _compute_sample_weights(split_payload, task_order):
@@ -336,36 +395,71 @@ for epoch in range(EPOCHS):
   task_reports = {}
   aggregate_score = 0.0
   scored_tasks = 0
+  skipped_selection_tasks = {}
   for task_name, values in val_predictions.items():
     if not values["labels"]:
       continue
 
     metric_name, metric_value, report = _metric_from_preds(values["labels"], values["preds"], task_metas[task_name]["dtype"])
-    if task_metas[task_name]["dtype"] == "float":
-      normalized_mae = mean_absolute_error(values["normalized_labels"], values["normalized_preds"])
-      selection_metric = -normalized_mae
-      report["normalized_mae"] = normalized_mae
-    else:
-      selection_metric = metric_value
+    selection_metric, selection_metric_name = _select_validation_metric(
+      task_name,
+      values,
+      report,
+      task_metas[task_name]["dtype"],
+    )
 
     task_reports[task_name] = {
       "metric_name": metric_name,
       "metric_value": metric_value,
       "selection_metric": selection_metric,
+      "selection_metric_name": selection_metric_name,
       "report": report,
     }
+    if selection_metric is None:
+      skipped_selection_tasks[task_name] = selection_metric_name
+      continue
+
     aggregate_score += selection_metric
     scored_tasks += 1
 
-  aggregate_score /= max(1, scored_tasks)
+  # Underpowered validation tasks are still reported, but must not drive early stopping.
+  if scored_tasks == 0:
+    skipped_msg = ", ".join(f"{task} ({reason})" for task, reason in skipped_selection_tasks.items())
+    raise ValueError(f"No validation task has enough labels for checkpoint selection. Skipped: {skipped_msg}")
+
+  aggregate_score /= scored_tasks
   summary_parts = []
   for task_name in sorted(task_reports):
     report = task_reports[task_name]["report"]
     if task_metas[task_name]["dtype"] == "bool":
-      summary_parts.append(f"{task_name}:ACC={report['acc']:.4f} F1={report['f1']:.4f}")
+      auroc = report.get("auroc")
+      auroc_msg = "nan" if auroc is None else f"{auroc:.4f}"
+      summary_parts.append(
+        f"{task_name}:ACC={report['acc']:.4f} BAL_ACC={report['balanced_accuracy']:.4f} "
+        f"F1={report['f1']:.4f} AUROC={auroc_msg}"
+      )
     else:
-      summary_parts.append(f"{task_name}:MAE={report['mae']:.4f} RMSE={report['rmse']:.4f}")
-  print(f"Train Loss: {total_loss / len(train_loader):.4f} | Val " + " ".join(summary_parts))
+      pearson = report.get("pearson")
+      pearson_msg = "nan" if pearson is None else f"{pearson:.4f}"
+      summary_parts.append(
+        f"{task_name}:MAE={report['mae']:.4f} RMSE={report['rmse']:.4f} "
+        f"PEARSON={pearson_msg}"
+      )
+
+  selection_parts = [
+    f"{task}={details['selection_metric_name']}:{details['selection_metric']:.4f}"
+    for task, details in sorted(task_reports.items())
+    if details["selection_metric"] is not None
+  ]
+  if skipped_selection_tasks:
+    skipped_msg = "; ".join(f"{task}:{reason}" for task, reason in sorted(skipped_selection_tasks.items()))
+    selection_parts.append(f"skipped={skipped_msg}")
+  print(
+    f"Train Loss: {total_loss / len(train_loader):.4f} | Val "
+    + " ".join(summary_parts)
+    + f" | Select aggregate={aggregate_score:.4f} "
+    + " ".join(selection_parts)
+  )
 
   if aggregate_score > best_metric:
     best_metric = aggregate_score
@@ -428,6 +522,10 @@ torch.save(
       "run_date": run_date,
       "best_aggregate_score": best_state["aggregate_score"] if best_state else None,
       "best_task_reports": best_state["task_reports"] if best_state else None,
+      "classification_selection_metric": CLASSIFICATION_SELECTION_METRIC,
+      "regression_selection_metric": REGRESSION_SELECTION_METRIC,
+      "min_classification_val_labels": MIN_CLASSIFICATION_VAL_LABELS,
+      "min_regression_val_labels": MIN_REGRESSION_VAL_LABELS,
     },
   },
   out_path,
