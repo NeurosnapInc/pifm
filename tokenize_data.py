@@ -9,6 +9,7 @@ import random
 import re
 import shutil
 import subprocess
+from collections import Counter, defaultdict
 from typing import Dict, List
 
 import duckdb
@@ -180,23 +181,146 @@ def _load_sequence_clusters(records) -> Dict[str, str]:
   return {sequence: id_to_cluster[sequence_id] for sequence, sequence_id in sequence_to_id.items()}
 
 
-def _assign_units_to_splits(units: List[str], rng) -> Dict[str, str]:
-  shuffled_units = list(units)
-  rng.shuffle(shuffled_units)
+class _DisjointSet:
+  def __init__(self, units):
+    self.parent = {unit: unit for unit in units}
 
-  n_total = len(shuffled_units)
-  n_train = int(TRAIN_FRACTION * n_total)
-  n_val = int(VAL_FRACTION * n_total)
+  def find(self, unit):
+    parent = self.parent[unit]
+    if parent != unit:
+      self.parent[unit] = self.find(parent)
+    return self.parent[unit]
 
-  assignments: Dict[str, str] = {}
-  for unit in shuffled_units[:n_train]:
-    assignments[unit] = "train"
-  for unit in shuffled_units[n_train:n_train + n_val]:
-    assignments[unit] = "validation"
-  for unit in shuffled_units[n_train + n_val:]:
-    assignments[unit] = "test"
+  def union(self, first, second):
+    first_root = self.find(first)
+    second_root = self.find(second)
+    if first_root != second_root:
+      self.parent[second_root] = first_root
 
-  return assignments
+
+def _record_unit_set(record, sequence_to_unit: Dict[str, str]):
+  return {sequence_to_unit[sequence] for sequence in _record_sequences(record)}
+
+
+def _record_label_stats(record) -> Counter:
+  stats = Counter(total=1)
+  interaction_idx = record["task_to_idx"].get("interaction")
+  affinity_idx = record["task_to_idx"].get("affinity")
+
+  if interaction_idx is not None and record["mask"][interaction_idx]:
+    if record["labels"][interaction_idx] > 0.5:
+      stats["interaction_pos"] += 1
+    else:
+      stats["interaction_neg"] += 1
+
+  if affinity_idx is not None and record["mask"][affinity_idx]:
+    stats["affinity"] += 1
+
+  stats[f"source:{record['source']}"] += 1
+  return stats
+
+
+def _build_split_units(records, sequence_to_unit: Dict[str, str]):
+  base_units = sorted(set(sequence_to_unit.values()))
+  dsu = _DisjointSet(base_units)
+
+  # A sample can link multiple sequence clusters; those clusters must move together
+  # or the sample would either leak across splits or need to be discarded.
+  for record in records:
+    record_units = sorted(_record_unit_set(record, sequence_to_unit))
+    if not record_units:
+      continue
+    first = record_units[0]
+    for unit in record_units[1:]:
+      dsu.union(first, unit)
+
+  unit_to_component = {unit: dsu.find(unit) for unit in base_units}
+  component_records = defaultdict(list)
+  component_stats = defaultdict(Counter)
+
+  for record in records:
+    record_units = _record_unit_set(record, sequence_to_unit)
+    component = unit_to_component[next(iter(record_units))]
+    component_records[component].append(record)
+    component_stats[component].update(_record_label_stats(record))
+
+  return component_records, component_stats
+
+
+def _weighted_unit_size(stats: Counter):
+  # Affinity labels and negatives are scarce, so sort them earlier during greedy placement.
+  return (
+    stats["total"]
+    + 20 * stats["affinity"]
+    + 20 * stats["interaction_neg"]
+    + 2 * stats["interaction_pos"]
+  )
+
+
+def _feature_weight(feature_name: str):
+  if feature_name == "affinity":
+    return 20.0
+  if feature_name == "interaction_neg":
+    return 20.0
+  if feature_name.startswith("source:"):
+    return 0.5
+  return 1.0
+
+
+def _split_balance_score(split_stats, total_stats):
+  fractions = {
+    "train": TRAIN_FRACTION,
+    "validation": VAL_FRACTION,
+    "test": TEST_FRACTION,
+  }
+  score = 0.0
+
+  for split_name, fraction in fractions.items():
+    for feature_name, total_value in total_stats.items():
+      if total_value <= 0:
+        continue
+      target = total_value * fraction
+      observed = split_stats[split_name][feature_name]
+      diff = (observed - target) / max(1.0, target)
+      score += _feature_weight(feature_name) * diff * diff
+
+  return score
+
+
+def _assign_components_label_aware(component_stats, rng):
+  components = list(component_stats)
+  rng.shuffle(components)
+  components.sort(key=lambda component: _weighted_unit_size(component_stats[component]), reverse=True)
+
+  total_stats = Counter()
+  for stats in component_stats.values():
+    total_stats.update(stats)
+
+  split_stats = {
+    "train": Counter(),
+    "validation": Counter(),
+    "test": Counter(),
+  }
+  component_to_split = {}
+
+  for component in components:
+    stats = component_stats[component]
+    best_split = None
+    best_score = None
+
+    for split_name in ("train", "validation", "test"):
+      split_stats[split_name].update(stats)
+      score = _split_balance_score(split_stats, total_stats)
+      split_stats[split_name].subtract(stats)
+
+      if best_score is None or score < best_score:
+        best_score = score
+        best_split = split_name
+
+    component_to_split[component] = best_split
+    split_stats[best_split].update(stats)
+
+  return component_to_split, split_stats
 
 
 def _split_records_random(records, rng):
@@ -214,22 +338,14 @@ def _split_records_random(records, rng):
 
 
 def _split_records_by_sequence_units(records, sequence_to_unit: Dict[str, str], rng):
-  units = sorted(set(sequence_to_unit.values()))
-  unit_to_split = _assign_units_to_splits(units, rng)
+  component_records, component_stats = _build_split_units(records, sequence_to_unit)
+  component_to_split, split_stats = _assign_components_label_aware(component_stats, rng)
   split_records = {"train": [], "validation": [], "test": []}
-  dropped_cross_split = 0
 
-  for record in records:
-    record_splits = {
-      unit_to_split[sequence_to_unit[sequence]]
-      for sequence in _record_sequences(record)
-    }
-    if len(record_splits) != 1:
-      dropped_cross_split += 1
-      continue
-    split_records[record_splits.pop()].append(record)
+  for component, rows in component_records.items():
+    split_records[component_to_split[component]].extend(rows)
 
-  return split_records, dropped_cross_split
+  return split_records, 0, split_stats
 
 
 def _split_records(records):
@@ -241,7 +357,8 @@ def _split_records(records):
 
   rng = random.Random(SPLIT_SEED)
   if SPLIT_STRATEGY == "random":
-    return _split_records_random(records, rng)
+    split_records, dropped_cross_split = _split_records_random(records, rng)
+    return split_records, dropped_cross_split, None
 
   if SPLIT_STRATEGY == "protein":
     sequence_to_unit = {sequence: sequence for sequence in _all_unique_sequences(records)}
@@ -249,6 +366,34 @@ def _split_records(records):
 
   sequence_to_unit = _load_sequence_clusters(records)
   return _split_records_by_sequence_units(records, sequence_to_unit, rng)
+
+
+def _print_split_audit(split_records, task_order, task_to_idx):
+  print("Split audit:")
+  for split_name in ("train", "validation", "test"):
+    rows = split_records[split_name]
+    source_counts = Counter(record["source"] for record in rows)
+    source_msg = " ".join(f"{source}={count}" for source, count in sorted(source_counts.items()))
+    print(f"  {split_name}: total={len(rows)} sources[{source_msg}]")
+
+    if "interaction" in task_to_idx:
+      task_idx = task_to_idx["interaction"]
+      labels = [record["labels"][task_idx] for record in rows if record["mask"][task_idx]]
+      neg = sum(1 for label in labels if label <= 0.5)
+      pos = len(labels) - neg
+      print(f"    interaction: labels={len(labels)} neg={neg} pos={pos}")
+
+    if "affinity" in task_to_idx:
+      task_idx = task_to_idx["affinity"]
+      values = [record["labels"][task_idx] for record in rows if record["mask"][task_idx]]
+      if values:
+        tensor = torch.tensor(values, dtype=torch.float)
+        print(
+          f"    affinity: labels={len(values)} "
+          f"mean={tensor.mean().item():.4f} std={tensor.std(unbiased=False).item():.4f}"
+        )
+      else:
+        print("    affinity: labels=0")
 
 
 def _compute_regression_stats(records, task_order, task_metas):
@@ -301,6 +446,7 @@ def _build_tokenized_split(records, token_map, task_order, task_metas, means, st
   normalized_labels = []
   label_mask = []
   lengths = []
+  sources = []
 
   for record in records:
     group1_tensors = [token_map[sequence] for sequence in record["group1_sequences"]]
@@ -321,6 +467,7 @@ def _build_tokenized_split(records, token_map, task_order, task_metas, means, st
     normalized_labels.append(normalized_tensor)
     label_mask.append(mask_tensor)
     lengths.append(sum(len(ids) for ids in group1_tensors + group2_tensors))
+    sources.append(record["source"])
 
   num_tasks = len(task_order)
   if raw_labels:
@@ -341,6 +488,7 @@ def _build_tokenized_split(records, token_map, task_order, task_metas, means, st
     "normalized_labels": normalized_labels_tensor,
     "label_mask": label_mask_tensor,
     "lengths": lengths_tensor,
+    "sources": sources,
   }
 
 
@@ -376,7 +524,7 @@ try:
   task_to_idx = {task_name: idx for idx, task_name in enumerate(task_order)}
 
   records = []
-  for _, group1, group2, interaction_label, affinity_pkd in sample_rows:
+  for source, group1, group2, interaction_label, affinity_pkd in sample_rows:
     labels = _empty_label_row(len(task_order))
     mask = [False] * len(task_order)
 
@@ -401,13 +549,15 @@ try:
         "group2_sequences": group2.split(":"),
         "labels": labels,
         "mask": mask,
+        "source": source,
+        "task_to_idx": task_to_idx,
       }
     )
 
   if not records:
     raise ValueError("No labeled records remained after filtering.")
 
-  split_records, dropped_cross_split = _split_records(records)
+  split_records, dropped_cross_split, _ = _split_records(records)
 
   if len(split_records["train"]) == 0 or len(split_records["validation"]) == 0:
     raise ValueError("Train/validation split is empty; adjust dataset size or split fractions.")
@@ -420,6 +570,7 @@ try:
     f"pairs: train={len(split_records['train'])} "
     f"val={len(split_records['validation'])} test={len(split_records['test'])}"
   )
+  _print_split_audit(split_records, task_order, task_to_idx)
   for task_name in task_order:
     task_idx = task_to_idx[task_name]
     counts = {
@@ -452,6 +603,7 @@ try:
         "db_path": str(AGGREGATED_DB_PATH),
         "split_seed": SPLIT_SEED,
         "split_strategy": SPLIT_STRATEGY,
+        "split_assignment": "label_aware_cluster_components" if SPLIT_STRATEGY in {"protein", "cluster"} else "random_rows",
         "cluster_min_seq_id": CLUSTER_MIN_SEQ_ID if SPLIT_STRATEGY == "cluster" else None,
         "cluster_coverage": CLUSTER_COVERAGE if SPLIT_STRATEGY == "cluster" else None,
         "sequence_cluster_tsv_path": str(SEQUENCE_CLUSTER_TSV_PATH) if SPLIT_STRATEGY == "cluster" else None,
