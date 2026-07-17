@@ -31,6 +31,7 @@ class MultiTaskGroupPairDataset(Dataset):
           "normalized_labels": split_payload["normalized_labels"][idx],
           "label_mask": split_payload["label_mask"][idx],
           "length": int(length),
+          "source": split_payload.get("sources", ["unknown"] * len(split_payload["lengths"]))[idx],
         }
       )
 
@@ -249,7 +250,7 @@ def output_dim_from_meta(meta, labels, mask):
   return int(observed.max().item()) + 1
 
 
-def collate_multitask_batch(batch, pad_token_id):
+def collate_multitask_batch(batch, pad_token_id, include_sources=False):
   flat_input_ids = []
   chain_to_sample = []
   chain_to_group = []
@@ -269,7 +270,7 @@ def collate_multitask_batch(batch, pad_token_id):
   raw_labels = torch.stack([sample["raw_labels"] for sample in batch])
   normalized_labels = torch.stack([sample["normalized_labels"] for sample in batch])
   label_mask = torch.stack([sample["label_mask"] for sample in batch])
-  return (
+  output = (
     padded_ids,
     attention_mask,
     torch.tensor(chain_to_sample, dtype=torch.long),
@@ -278,3 +279,6 @@ def collate_multitask_batch(batch, pad_token_id):
     normalized_labels,
     label_mask,
   )
+  if include_sources:
+    return output + ([sample["source"] for sample in batch],)
+  return output

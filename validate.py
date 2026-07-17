@@ -3,6 +3,7 @@ Validate a trained multitask protein-group pair checkpoint on a cached split.
 """
 
 import argparse
+from collections import defaultdict
 
 import torch
 from torch.utils.data import DataLoader
@@ -66,6 +67,93 @@ def _format_table(title, columns, rows):
   return "\n".join(lines) + "\n"
 
 
+def _empty_prediction_bucket():
+  return {
+    "labels": [],
+    "preds": [],
+    "scores": [],
+  }
+
+
+def _append_task_predictions(target, task_name, labels, preds, scores, sources=None):
+  target[task_name]["labels"].extend(labels)
+  target[task_name]["preds"].extend(preds)
+  target[task_name]["scores"].extend(scores)
+
+  if sources is None:
+    return
+
+  for source, label, pred, score in zip(sources, labels, preds, scores):
+    bucket = target[task_name]["by_source"][source]
+    bucket["labels"].append(label)
+    bucket["preds"].append(pred)
+    bucket["scores"].append(score)
+
+
+def _append_regression_predictions(target, task_name, labels, preds, sources=None):
+  target[task_name]["labels"].extend(labels)
+  target[task_name]["preds"].extend(preds)
+
+  if sources is None:
+    return
+
+  for source, label, pred in zip(sources, labels, preds):
+    bucket = target[task_name]["by_source"][source]
+    bucket["labels"].append(label)
+    bucket["preds"].append(pred)
+
+
+def _classification_row(task_name, n, report, prefix=None):
+  row = [
+    task_name,
+    n,
+    _format_float(report["acc"]),
+    _format_float(report["balanced_acc"]),
+    _format_float(report["precision"]),
+    _format_float(report["recall"]),
+    _format_float(report["specificity"]),
+    _format_float(report["negative_recall"]),
+    _format_float(report["f1"]),
+    _format_float(report["mcc"]),
+    report["tn"],
+    report["fp"],
+    report["fn"],
+    report["tp"],
+    _format_float(report["auroc"]),
+    _format_float(report["auprc"]),
+    report["label_ratio"],
+    report["pred_ratio"],
+  ]
+  return ([prefix] if prefix is not None else []) + row
+
+
+def _regression_row(task_name, n, report, prefix=None):
+  row = [
+    task_name,
+    n,
+    _format_float(report["label_mean"]),
+    _format_float(report["label_std"]),
+    _format_float(report["pred_mean"]),
+    _format_float(report["pred_std"]),
+    _format_float(report["mae"]),
+    _format_float(report["rmse"]),
+    _format_float(report["pearson"]),
+    _format_float(report["spearman"]),
+    _format_float(report["r2"]),
+  ]
+  return ([prefix] if prefix is not None else []) + row
+
+
+CLASSIFICATION_COLUMNS = [
+  "task", "n", "acc", "bal_acc", "precision", "recall", "specificity", "neg_recall",
+  "f1", "mcc", "tn", "fp", "fn", "tp", "auroc", "auprc", "label_ratio", "pred_ratio",
+]
+REGRESSION_COLUMNS = [
+  "task", "n", "label_mean", "label_std", "pred_mean", "pred_std", "mae", "rmse",
+  "pearson", "spearman", "r2",
+]
+
+
 def parse_args():
   parser = argparse.ArgumentParser(description="Validate a trained multitask group-pair checkpoint.")
   parser.add_argument("--checkpoint", required=True, help="Path to the saved adapter checkpoint.")
@@ -98,7 +186,7 @@ def main():
       args.batch_size,
       max_tokens_per_batch=EVAL_MAX_TOKENS_PER_BATCH,
     ),
-    collate_fn=lambda batch: collate_multitask_batch(batch, pad_token_id),
+    collate_fn=lambda batch: collate_multitask_batch(batch, pad_token_id, include_sources=True),
     pin_memory=PIN_MEMORY,
   )
 
@@ -140,13 +228,23 @@ def main():
       "labels": [],
       "preds": [],
       "scores": [],
+      "by_source": defaultdict(_empty_prediction_bucket),
     }
     for task_name in task_order
   }
 
   print(f"Running evaluation on split='{args.split}'")
   with torch.no_grad():
-    for input_ids, attn_mask, chain_to_sample, chain_to_group, raw_labels, normalized_labels, label_mask in tqdm(loader, desc="Validate"):
+    for (
+      input_ids,
+      attn_mask,
+      chain_to_sample,
+      chain_to_group,
+      raw_labels,
+      normalized_labels,
+      label_mask,
+      sources,
+    ) in tqdm(loader, desc="Validate"):
       input_ids = input_ids.to(DEVICE, non_blocking=PIN_MEMORY)
       attn_mask = attn_mask.to(DEVICE, non_blocking=PIN_MEMORY)
       chain_to_sample = chain_to_sample.to(DEVICE, non_blocking=PIN_MEMORY)
@@ -167,16 +265,30 @@ def main():
           preds_norm = outputs[task_name][mask].squeeze(-1).float()
           preds = preds_norm * regression_stds[task_idx] + regression_means[task_idx]
           labels = raw_labels[mask, task_idx].float()
-          predictions[task_name]["preds"].extend(preds.cpu().tolist())
-          predictions[task_name]["labels"].extend(labels.cpu().tolist())
+          mask_list = mask.detach().cpu().tolist()
+          masked_sources = [source for source, keep in zip(sources, mask_list) if keep]
+          _append_regression_predictions(
+            predictions,
+            task_name,
+            labels.cpu().tolist(),
+            preds.cpu().tolist(),
+            masked_sources,
+          )
         else:
           logits = outputs[task_name][mask].float()
           probs = torch.softmax(logits, dim=1)
           preds = probs.argmax(dim=1)
           labels = raw_labels[mask, task_idx].long()
-          predictions[task_name]["preds"].extend(preds.cpu().tolist())
-          predictions[task_name]["labels"].extend(labels.cpu().tolist())
-          predictions[task_name]["scores"].extend(probs[:, 1].cpu().tolist())
+          mask_list = mask.detach().cpu().tolist()
+          masked_sources = [source for source, keep in zip(sources, mask_list) if keep]
+          _append_task_predictions(
+            predictions,
+            task_name,
+            labels.cpu().tolist(),
+            preds.cpu().tolist(),
+            probs[:, 1].cpu().tolist(),
+            masked_sources,
+          )
 
   print()
   print(f"Dataset size ({args.split}): {len(dataset)} pairs")
@@ -195,61 +307,55 @@ def main():
     meta = task_metas[task_name]
     if meta["dtype"] == "bool":
       report = classification_report(labels, preds, predictions[task_name]["scores"])
-      classification_rows.append(
-        [
-          task_name,
-          len(labels),
-          _format_float(report["acc"]),
-          _format_float(report["balanced_acc"]),
-          _format_float(report["precision"]),
-          _format_float(report["recall"]),
-          _format_float(report["specificity"]),
-          _format_float(report["negative_recall"]),
-          _format_float(report["f1"]),
-          _format_float(report["mcc"]),
-          report["tn"],
-          report["fp"],
-          report["fn"],
-          report["tp"],
-          _format_float(report["auroc"]),
-          _format_float(report["auprc"]),
-          report["label_ratio"],
-          report["pred_ratio"],
-        ]
-      )
+      classification_rows.append(_classification_row(task_name, len(labels), report))
     else:
       report = regression_report(labels, preds)
-      regression_rows.append(
-        [
-          task_name,
-          len(labels),
-          _format_float(report["label_mean"]),
-          _format_float(report["label_std"]),
-          _format_float(report["pred_mean"]),
-          _format_float(report["pred_std"]),
-          _format_float(report["mae"]),
-          _format_float(report["rmse"]),
-          _format_float(report["pearson"]),
-          _format_float(report["spearman"]),
-          _format_float(report["r2"]),
-        ]
-      )
+      regression_rows.append(_regression_row(task_name, len(labels), report))
 
   print(
     _format_table(
       "Classification Tasks",
-      [
-        "task", "n", "acc", "bal_acc", "precision", "recall", "specificity", "neg_recall",
-        "f1", "mcc", "tn", "fp", "fn", "tp", "auroc", "auprc", "label_ratio", "pred_ratio",
-      ],
+      CLASSIFICATION_COLUMNS,
       classification_rows,
     )
   )
   print(
     _format_table(
       "Regression Tasks",
-      ["task", "n", "label_mean", "label_std", "pred_mean", "pred_std", "mae", "rmse", "pearson", "spearman", "r2"],
+      REGRESSION_COLUMNS,
       regression_rows,
+    )
+  )
+
+  source_classification_rows = []
+  source_regression_rows = []
+  for task_name in sorted(task_order):
+    meta = task_metas[task_name]
+    for source, source_values in sorted(predictions[task_name]["by_source"].items()):
+      labels = source_values["labels"]
+      preds = source_values["preds"]
+      if not labels:
+        continue
+
+      if meta["dtype"] == "bool":
+        report = classification_report(labels, preds, source_values["scores"])
+        source_classification_rows.append(_classification_row(task_name, len(labels), report, prefix=source))
+      else:
+        report = regression_report(labels, preds)
+        source_regression_rows.append(_regression_row(task_name, len(labels), report, prefix=source))
+
+  print(
+    _format_table(
+      "Source-Specific Classification Tasks",
+      ["source"] + CLASSIFICATION_COLUMNS,
+      source_classification_rows,
+    )
+  )
+  print(
+    _format_table(
+      "Source-Specific Regression Tasks",
+      ["source"] + REGRESSION_COLUMNS,
+      source_regression_rows,
     )
   )
 
