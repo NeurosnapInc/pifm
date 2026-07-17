@@ -23,6 +23,7 @@ from transformers import T5EncoderModel, get_linear_schedule_with_warmup
 from calibration import fit_posthoc_calibration
 from config import (
   ADAPTER_DIM,
+  AFFINITY_NORMALIZATION,
   BATCH_SAMPLER_SEED,
   BATCH_SIZE,
   CLASSIFICATION_HEAD_HIDDEN,
@@ -33,8 +34,11 @@ from config import (
   CLASSIFICATION_SELECTION_METRIC,
   MIN_CLASSIFICATION_VAL_LABELS,
   MIN_REGRESSION_VAL_LABELS,
+  MIN_SOURCE_AFFINITY_LABELS,
   MODEL_NAME,
   PATIENCE,
+  REGRESSION_HUBER_DELTA,
+  REGRESSION_LOSS,
   REGRESSION_SELECTION_METRIC,
   REGRESSION_HEAD_HIDDEN,
   TRAIN_CACHE_PATH,
@@ -176,7 +180,80 @@ def _compute_sample_weights(split_payload, task_order):
   return weights, task_label_counts
 
 
-def _compute_multitask_loss(outputs, raw_labels, normalized_labels, label_mask, task_order, task_metas, criteria):
+def _compute_source_regression_stats(split_payload, task_order, global_means, global_stds):
+  source_stats = {}
+  sources = split_payload.get("sources")
+  if AFFINITY_NORMALIZATION != "source" or sources is None:
+    return source_stats
+
+  label_mask = split_payload["label_mask"]
+  raw_labels = split_payload["raw_labels"]
+  for task_idx, task_name in enumerate(task_order):
+    if task_name != "affinity":
+      continue
+
+    values_by_source = {}
+    for sample_idx, source in enumerate(sources):
+      if not label_mask[sample_idx, task_idx]:
+        continue
+      values_by_source.setdefault(source, []).append(float(raw_labels[sample_idx, task_idx].item()))
+
+    task_stats = {}
+    for source, values in values_by_source.items():
+      if len(values) < MIN_SOURCE_AFFINITY_LABELS:
+        continue
+      tensor = torch.tensor(values, dtype=torch.float)
+      std = tensor.std(unbiased=False)
+      task_stats[source] = {
+        "mean": float(tensor.mean().item()),
+        "std": float(std.item() if std.item() > 0 else 1.0),
+        "n": len(values),
+      }
+
+    task_stats["__global__"] = {
+      "mean": float(global_means[task_idx].item()),
+      "std": float(global_stds[task_idx].item()),
+      "n": int(label_mask[:, task_idx].sum().item()),
+    }
+    source_stats[task_name] = task_stats
+
+  return source_stats
+
+
+def _source_norm_tensors(task_name, sources, source_regression_stats, device):
+  task_stats = source_regression_stats.get(task_name, {})
+  fallback = task_stats.get("__global__", {"mean": 0.0, "std": 1.0})
+  means = []
+  stds = []
+  for source in sources:
+    stats = task_stats.get(source, fallback)
+    means.append(stats["mean"])
+    stds.append(stats["std"])
+  return (
+    torch.tensor(means, dtype=torch.float, device=device),
+    torch.tensor(stds, dtype=torch.float, device=device),
+  )
+
+
+def _normalize_regression_targets(task_name, raw_values, source_values, source_regression_stats):
+  means, stds = _source_norm_tensors(task_name, source_values, source_regression_stats, raw_values.device)
+  return (raw_values - means) / stds
+
+
+def _denormalize_regression_preds(task_name, normalized_preds, source_values, source_regression_stats):
+  means, stds = _source_norm_tensors(task_name, source_values, source_regression_stats, normalized_preds.device)
+  return normalized_preds * stds + means
+
+
+def _regression_loss(preds, targets):
+  if REGRESSION_LOSS == "mse":
+    return F.mse_loss(preds, targets)
+  if REGRESSION_LOSS == "huber":
+    return F.huber_loss(preds, targets, delta=REGRESSION_HUBER_DELTA)
+  raise ValueError(f"Unsupported REGRESSION_LOSS={REGRESSION_LOSS!r}")
+
+
+def _compute_multitask_loss(outputs, raw_labels, normalized_labels, label_mask, sources, task_order, task_metas, criteria, source_regression_stats):
   task_losses = []
 
   for task_idx, task_name in enumerate(task_order):
@@ -187,8 +264,17 @@ def _compute_multitask_loss(outputs, raw_labels, normalized_labels, label_mask, 
     preds = outputs[task_name][mask]
     meta = task_metas[task_name]
     if meta["dtype"] == "float":
-      targets = normalized_labels[mask, task_idx]
-      task_loss = F.mse_loss(preds.squeeze(-1), targets)
+      if task_name in source_regression_stats:
+        masked_sources = [source for source, keep in zip(sources, mask.detach().cpu().tolist()) if keep]
+        targets = _normalize_regression_targets(
+          task_name,
+          raw_labels[mask, task_idx],
+          masked_sources,
+          source_regression_stats,
+        )
+      else:
+        targets = normalized_labels[mask, task_idx]
+      task_loss = _regression_loss(preds.squeeze(-1), targets)
     else:
       targets = raw_labels[mask, task_idx].long()
       task_loss = criteria[task_name](preds, targets)
@@ -217,6 +303,7 @@ pad_token_id = payload["config"]["pad_token_id"]
 normalization = payload["normalization"]
 regression_means = normalization["train_mean"]
 regression_stds = normalization["train_std"]
+source_regression_stats = _compute_source_regression_stats(train_split, task_order, regression_means, regression_stds)
 
 train_ds = MultiTaskGroupPairDataset(train_split)
 val_ds = MultiTaskGroupPairDataset(val_split)
@@ -247,7 +334,7 @@ train_loader = DataLoader(
     sample_weights=train_sample_weights,
     max_tokens_per_batch=TRAIN_MAX_TOKENS_PER_BATCH,
   ),
-  collate_fn=lambda batch: collate_multitask_batch(batch, pad_token_id),
+  collate_fn=lambda batch: collate_multitask_batch(batch, pad_token_id, include_sources=True),
   pin_memory=PIN_MEMORY,
 )
 val_loader = DataLoader(
@@ -259,7 +346,7 @@ val_loader = DataLoader(
     seed=BATCH_SAMPLER_SEED,
     max_tokens_per_batch=EVAL_MAX_TOKENS_PER_BATCH,
   ),
-  collate_fn=lambda batch: collate_multitask_batch(batch, pad_token_id),
+  collate_fn=lambda batch: collate_multitask_batch(batch, pad_token_id, include_sources=True),
   pin_memory=PIN_MEMORY,
 )
 
@@ -330,7 +417,7 @@ for epoch in range(EPOCHS):
   model.train()
   total_loss = 0.0
 
-  for input_ids, attn_mask, chain_to_sample, chain_to_group, raw_labels, normalized_labels, label_mask in tqdm(
+  for input_ids, attn_mask, chain_to_sample, chain_to_group, raw_labels, normalized_labels, label_mask, sources in tqdm(
     train_loader,
     desc=f"Epoch {epoch + 1}/{EPOCHS}",
   ):
@@ -344,7 +431,17 @@ for epoch in range(EPOCHS):
 
     with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=AMP_ENABLED):
       outputs = model(input_ids, attn_mask, chain_to_sample, chain_to_group, raw_labels.shape[0])
-      loss = _compute_multitask_loss(outputs, raw_labels, normalized_labels, label_mask, task_order, task_metas, criteria)
+      loss = _compute_multitask_loss(
+        outputs,
+        raw_labels,
+        normalized_labels,
+        label_mask,
+        sources,
+        task_order,
+        task_metas,
+        criteria,
+        source_regression_stats,
+      )
 
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
@@ -366,7 +463,7 @@ for epoch in range(EPOCHS):
   }
 
   with torch.no_grad():
-    for input_ids, attn_mask, chain_to_sample, chain_to_group, raw_labels, normalized_labels, label_mask in val_loader:
+    for input_ids, attn_mask, chain_to_sample, chain_to_group, raw_labels, normalized_labels, label_mask, sources in val_loader:
       input_ids = input_ids.to(DEVICE, non_blocking=PIN_MEMORY)
       attn_mask = attn_mask.to(DEVICE, non_blocking=PIN_MEMORY)
       chain_to_sample = chain_to_sample.to(DEVICE, non_blocking=PIN_MEMORY)
@@ -386,8 +483,18 @@ for epoch in range(EPOCHS):
         meta = task_metas[task_name]
         if meta["dtype"] == "float":
           preds_norm = outputs[task_name][mask].squeeze(-1).float()
-          labels_norm = normalized_labels[mask, task_idx].float()
-          preds = preds_norm * regression_stds_device[task_idx] + regression_means_device[task_idx]
+          masked_sources = [source for source, keep in zip(sources, mask.detach().cpu().tolist()) if keep]
+          if task_name in source_regression_stats:
+            labels_norm = _normalize_regression_targets(
+              task_name,
+              raw_labels[mask, task_idx].float(),
+              masked_sources,
+              source_regression_stats,
+            )
+            preds = _denormalize_regression_preds(task_name, preds_norm, masked_sources, source_regression_stats)
+          else:
+            labels_norm = normalized_labels[mask, task_idx].float()
+            preds = preds_norm * regression_stds_device[task_idx] + regression_means_device[task_idx]
           labels = raw_labels[mask, task_idx].float()
           val_predictions[task_name]["preds"].extend(preds.cpu().tolist())
           val_predictions[task_name]["labels"].extend(labels.cpu().tolist())
@@ -530,6 +637,11 @@ torch.save(
       "task_output_dims": task_output_dims,
       "regression_mean": regression_means,
       "regression_std": regression_stds,
+      "regression_loss": REGRESSION_LOSS,
+      "regression_huber_delta": REGRESSION_HUBER_DELTA,
+      "affinity_normalization": AFFINITY_NORMALIZATION,
+      "min_source_affinity_labels": MIN_SOURCE_AFFINITY_LABELS,
+      "source_regression_stats": source_regression_stats,
       "calibration": calibration,
       "training_seed": TRAINING_SEED,
       "run_date": run_date,

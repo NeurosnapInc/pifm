@@ -144,6 +144,49 @@ def _regression_row(task_name, n, report, prefix=None):
   return ([prefix] if prefix is not None else []) + row
 
 
+def _source_norm_tensors(task_name, sources, source_regression_stats, device):
+  task_stats = (source_regression_stats or {}).get(task_name, {})
+  fallback = task_stats.get("__global__", {"mean": 0.0, "std": 1.0})
+  means = []
+  stds = []
+  for source in sources:
+    stats = task_stats.get(source, fallback)
+    means.append(stats["mean"])
+    stds.append(stats["std"])
+  return (
+    torch.tensor(means, dtype=torch.float, device=device),
+    torch.tensor(stds, dtype=torch.float, device=device),
+  )
+
+
+def _denormalize_regression_preds(task_name, normalized_preds, sources, source_regression_stats):
+  means, stds = _source_norm_tensors(task_name, sources, source_regression_stats, normalized_preds.device)
+  return normalized_preds * stds + means
+
+
+def _source_normalized_regression_report(by_source):
+  normalized_labels = []
+  normalized_preds = []
+
+  for values in by_source.values():
+    labels = values["labels"]
+    preds = values["preds"]
+    if len(labels) < 2:
+      continue
+
+    label_tensor = torch.tensor(labels, dtype=torch.float)
+    std = label_tensor.std(unbiased=False).item()
+    if std == 0.0:
+      continue
+    mean = label_tensor.mean().item()
+    normalized_labels.extend((label - mean) / std for label in labels)
+    normalized_preds.extend((pred - mean) / std for pred in preds)
+
+  if not normalized_labels:
+    return None, 0
+  return regression_report(normalized_labels, normalized_preds), len(normalized_labels)
+
+
 CLASSIFICATION_COLUMNS = [
   "task", "n", "acc", "bal_acc", "precision", "recall", "specificity", "neg_recall",
   "f1", "mcc", "tn", "fp", "fn", "tp", "auroc", "auprc", "label_ratio", "pred_ratio",
@@ -177,6 +220,7 @@ def main():
   pad_token_id = payload["config"]["pad_token_id"]
   regression_means = payload["normalization"]["train_mean"].to(DEVICE)
   regression_stds = payload["normalization"]["train_std"].to(DEVICE)
+  source_regression_stats = checkpoint["config"].get("source_regression_stats", {})
 
   dataset = MultiTaskGroupPairDataset(split_payload)
   loader = DataLoader(
@@ -263,10 +307,13 @@ def main():
         meta = task_metas[task_name]
         if meta["dtype"] == "float":
           preds_norm = outputs[task_name][mask].squeeze(-1).float()
-          preds = preds_norm * regression_stds[task_idx] + regression_means[task_idx]
           labels = raw_labels[mask, task_idx].float()
           mask_list = mask.detach().cpu().tolist()
           masked_sources = [source for source, keep in zip(sources, mask_list) if keep]
+          if task_name in source_regression_stats:
+            preds = _denormalize_regression_preds(task_name, preds_norm, masked_sources, source_regression_stats)
+          else:
+            preds = preds_norm * regression_stds[task_idx] + regression_means[task_idx]
           _append_regression_predictions(
             predictions,
             task_name,
@@ -329,6 +376,7 @@ def main():
 
   source_classification_rows = []
   source_regression_rows = []
+  source_normalized_regression_rows = []
   for task_name in sorted(task_order):
     meta = task_metas[task_name]
     for source, source_values in sorted(predictions[task_name]["by_source"].items()):
@@ -344,6 +392,11 @@ def main():
         report = regression_report(labels, preds)
         source_regression_rows.append(_regression_row(task_name, len(labels), report, prefix=source))
 
+    if meta["dtype"] == "float":
+      report, source_normalized_n = _source_normalized_regression_report(predictions[task_name]["by_source"])
+      if report is not None:
+        source_normalized_regression_rows.append(_regression_row(task_name, source_normalized_n, report))
+
   print(
     _format_table(
       "Source-Specific Classification Tasks",
@@ -356,6 +409,13 @@ def main():
       "Source-Specific Regression Tasks",
       ["source"] + REGRESSION_COLUMNS,
       source_regression_rows,
+    )
+  )
+  print(
+    _format_table(
+      "Source-Normalized Regression Tasks",
+      REGRESSION_COLUMNS,
+      source_normalized_regression_rows,
     )
   )
 

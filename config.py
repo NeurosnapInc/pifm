@@ -45,6 +45,12 @@ MIN_REGRESSION_VAL_LABELS = 100
 CLASSIFICATION_SELECTION_METRIC = "auroc"  # "auroc" or "balanced_accuracy"
 REGRESSION_SELECTION_METRIC = "normalized_mae"  # "normalized_mae" or "pearson"
 
+### Affinity Regression
+REGRESSION_LOSS = "huber"  # "mse" or "huber"
+REGRESSION_HUBER_DELTA = 1.0
+AFFINITY_NORMALIZATION = "source"  # "global" or "source"
+MIN_SOURCE_AFFINITY_LABELS = 20
+
 ### Architecture
 ADAPTER_DIM = 64
 DROPOUT = 0.1
