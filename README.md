@@ -367,3 +367,26 @@ task      cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson
 --------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  ------
 affinity  1042   0.7669  1.1370     7.0153     0.9732    1.3849  1.7254  0.4908   0.4500    0.2409
 ```
+
+##### Test Split
+```
+Classification Tasks
+task         n     acc     bal_acc  precision  recall  f1      auroc   auprc   label_ratio      pred_ratio
+-----------  ----  ------  -------  ---------  ------  ------  ------  ------  ---------------  ---------------
+interaction  1613  0.8772  0.5436   0.8763     0.9993  0.9338  0.9474  0.9907  0:0.134 1:0.866  0:0.012 1:0.988
+
+Regression Tasks
+task      n     label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
+--------  ----  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
+affinity  1042  7.4975      2.1386     7.4847     1.1830    1.9024  2.4361  0.0077   0.0571    -0.2975
+
+Checkpoint Classification Calibration Applied
+task         cal_n  thr     acc     bal_acc  precision  recall  f1      auroc   auprc   label_ratio      pred_ratio
+-----------  -----  ------  ------  -------  ---------  ------  ------  ------  ------  ---------------  ---------------
+interaction  1611   0.8700  0.9033  0.6448   0.9011     0.9979  0.9470  0.9474  0.9907  0:0.134 1:0.866  0:0.041 1:0.959
+
+Checkpoint Regression Calibration Applied
+task      cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
+--------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  -------
+affinity  1042   0.7669  1.1370     6.8773     0.9073    1.8411  2.3983  0.0077   0.0571    -0.2576
+```
