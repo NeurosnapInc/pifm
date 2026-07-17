@@ -203,7 +203,14 @@ def main():
           _format_float(report["balanced_acc"]),
           _format_float(report["precision"]),
           _format_float(report["recall"]),
+          _format_float(report["specificity"]),
+          _format_float(report["negative_recall"]),
           _format_float(report["f1"]),
+          _format_float(report["mcc"]),
+          report["tn"],
+          report["fp"],
+          report["fn"],
+          report["tp"],
           _format_float(report["auroc"]),
           _format_float(report["auprc"]),
           report["label_ratio"],
@@ -231,7 +238,10 @@ def main():
   print(
     _format_table(
       "Classification Tasks",
-      ["task", "n", "acc", "bal_acc", "precision", "recall", "f1", "auroc", "auprc", "label_ratio", "pred_ratio"],
+      [
+        "task", "n", "acc", "bal_acc", "precision", "recall", "specificity", "neg_recall",
+        "f1", "mcc", "tn", "fp", "fn", "tp", "auroc", "auprc", "label_ratio", "pred_ratio",
+      ],
       classification_rows,
     )
   )
@@ -269,7 +279,14 @@ def main():
             _format_float(report["balanced_acc"]),
             _format_float(report["precision"]),
             _format_float(report["recall"]),
+            _format_float(report["specificity"]),
+            _format_float(report["negative_recall"]),
             _format_float(report["f1"]),
+            _format_float(report["mcc"]),
+            report["tn"],
+            report["fp"],
+            report["fn"],
+            report["tp"],
             _format_float(report["auroc"]),
             _format_float(report["auprc"]),
             report["label_ratio"],
@@ -297,7 +314,11 @@ def main():
     print(
       _format_table(
         "Checkpoint Classification Calibration Applied",
-        ["task", "cal_n", "thr", "acc", "bal_acc", "precision", "recall", "f1", "auroc", "auprc", "label_ratio", "pred_ratio"],
+        [
+          "task", "cal_n", "thr", "acc", "bal_acc", "precision", "recall", "specificity",
+          "neg_recall", "f1", "mcc", "tn", "fp", "fn", "tp", "auroc", "auprc",
+          "label_ratio", "pred_ratio",
+        ],
         checkpoint_classification_rows,
       )
     )
@@ -312,7 +333,11 @@ def main():
     print(
       _format_table(
         "Post-hoc Classification Threshold Tuning (fit on internal half, report on held-out half)",
-        ["task", "cal_n", "rep_n", "thr", "acc", "bal_acc", "precision", "recall", "f1", "auroc", "auprc", "label_ratio", "pred_ratio"],
+        [
+          "task", "cal_n", "rep_n", "thr", "acc", "bal_acc", "precision", "recall",
+          "specificity", "neg_recall", "f1", "mcc", "tn", "fp", "fn", "tp", "auroc",
+          "auprc", "label_ratio", "pred_ratio",
+        ],
         format_posthoc_classification_rows(predictions, task_metas),
       )
     )

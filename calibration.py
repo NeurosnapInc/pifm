@@ -16,6 +16,7 @@ from sklearn.metrics import (
   r2_score,
   recall_score,
   roc_auc_score,
+  matthews_corrcoef,
 )
 
 
@@ -156,13 +157,36 @@ def _spearman_corr(labels, preds):
   return _pearson_corr(_average_ranks(labels), _average_ranks(preds))
 
 
+def _binary_confusion_counts(labels, preds):
+  tn = fp = fn = tp = 0
+  for label, pred in zip(labels, preds):
+    if label == 0 and pred == 0:
+      tn += 1
+    elif label == 0 and pred == 1:
+      fp += 1
+    elif label == 1 and pred == 0:
+      fn += 1
+    elif label == 1 and pred == 1:
+      tp += 1
+  return tn, fp, fn, tp
+
+
 def classification_report(labels, preds, scores):
+  tn, fp, fn, tp = _binary_confusion_counts(labels, preds)
+  specificity = tn / (tn + fp) if (tn + fp) else None
   report = {
     "acc": accuracy_score(labels, preds),
     "balanced_acc": balanced_accuracy_score(labels, preds),
     "precision": precision_score(labels, preds, zero_division=0),
     "recall": recall_score(labels, preds, zero_division=0),
+    "specificity": specificity,
+    "negative_recall": specificity,
     "f1": f1_score(labels, preds, zero_division=0),
+    "mcc": matthews_corrcoef(labels, preds),
+    "tn": tn,
+    "fp": fp,
+    "fn": fn,
+    "tp": tp,
     "label_ratio": _label_ratio_string(labels),
     "pred_ratio": _label_ratio_string(preds),
   }
@@ -221,7 +245,14 @@ def format_posthoc_classification_rows(predictions, task_metas):
         _format_float(report["balanced_acc"]),
         _format_float(report["precision"]),
         _format_float(report["recall"]),
+        _format_float(report["specificity"]),
+        _format_float(report["negative_recall"]),
         _format_float(report["f1"]),
+        _format_float(report["mcc"]),
+        report["tn"],
+        report["fp"],
+        report["fn"],
+        report["tp"],
         _format_float(report["auroc"]),
         _format_float(report["auprc"]),
         report["label_ratio"],

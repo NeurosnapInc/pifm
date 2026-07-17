@@ -15,7 +15,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, mean_absolute_error, mean_squared_error, roc_auc_score
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, matthews_corrcoef, mean_absolute_error, mean_squared_error, roc_auc_score
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import T5EncoderModel, get_linear_schedule_with_warmup
@@ -83,7 +83,17 @@ def _metric_from_preds(labels, preds, dtype: str) -> Tuple[str, float, Dict[str,
     acc = accuracy_score(labels, preds)
     bal_acc = balanced_accuracy_score(labels, preds)
     f1 = f1_score(labels, preds, zero_division=0)
-    return "f1", f1, {"acc": acc, "balanced_accuracy": bal_acc, "f1": f1}
+    tn = sum(1 for label, pred in zip(labels, preds) if label == 0 and pred == 0)
+    fp = sum(1 for label, pred in zip(labels, preds) if label == 0 and pred == 1)
+    specificity = tn / (tn + fp) if (tn + fp) else None
+    return "f1", f1, {
+      "acc": acc,
+      "balanced_accuracy": bal_acc,
+      "specificity": specificity,
+      "negative_recall": specificity,
+      "mcc": matthews_corrcoef(labels, preds),
+      "f1": f1,
+    }
 
   mae = mean_absolute_error(labels, preds)
   rmse = math.sqrt(mean_squared_error(labels, preds))
@@ -434,8 +444,11 @@ for epoch in range(EPOCHS):
     if task_metas[task_name]["dtype"] == "bool":
       auroc = report.get("auroc")
       auroc_msg = "nan" if auroc is None else f"{auroc:.4f}"
+      specificity = report["specificity"]
+      specificity_msg = "nan" if specificity is None else f"{specificity:.4f}"
       summary_parts.append(
         f"{task_name}:ACC={report['acc']:.4f} BAL_ACC={report['balanced_accuracy']:.4f} "
+        f"SPEC={specificity_msg} MCC={report['mcc']:.4f} "
         f"F1={report['f1']:.4f} AUROC={auroc_msg}"
       )
     else:
