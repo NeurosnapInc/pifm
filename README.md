@@ -333,3 +333,37 @@ However, unlike Prot2Prop, which predicts properties of individual proteins, thi
 - Complex-level representations
 
 Although the machine learning architecture is substantially different, the overall repository organization and software engineering philosophy will remain intentionally similar to Prot2Prop wherever practical.
+
+
+## Train Log
+### Version 2026-07-13
+- Switched tokenization from a random row split to a cluster-disjoint split to reduce sequence/homology leakage across train, validation, and test.
+- Replaced naive random cluster assignment with label-aware greedy split assignment over connected cluster components. The splitter now balances total samples, interaction positives, interaction negatives, affinity-labeled samples, and source counts where possible.
+- Standardized affinity labels to `pKd` in the aggregated DuckDB/tokenized cache so regression targets are comparable across PPB-Affinity, SKEMPI, and user-provided affinity sources.
+- Updated training checkpoint selection to avoid early stopping on misleading aggregate `F1`/`MAE`. Classification selection now uses `AUROC` by default, regression uses normalized `MAE`, and tasks with too few validation labels are ignored for checkpoint selection.
+- Increased token-capped batch sizes for A100 training throughput.
+- Result: the affinity validation set is now large enough to interpret (`n=1042`) and the model learns a moderate affinity signal. The interaction head has good ranking signal (`AUROC=0.8828`) but poor thresholded negative detection, still predicting almost everything as positive.
+##### Validation Split
+```
+Dataset size (validation): 1611 pairs
+
+Classification Tasks
+task         n     acc     bal_acc  precision  recall  f1      auroc   auprc   label_ratio      pred_ratio
+-----------  ----  ------  -------  ---------  ------  ------  ------  ------  ---------------  ---------------
+interaction  1611  0.8672  0.5046   0.8670     1.0000  0.9288  0.8828  0.9781  0:0.134 1:0.866  0:0.001 1:0.999
+
+Regression Tasks
+task      n     label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
+--------  ----  ----------  ---------  ---------  --------  ------  ------  -------  --------  ------
+affinity  1042  7.0140      1.9803     7.6647     1.2690    1.5393  1.8678  0.4908   0.4500    0.1104
+
+Checkpoint Classification Calibration Applied
+task         cal_n  thr     acc     bal_acc  precision  recall  f1      auroc   auprc   label_ratio      pred_ratio
+-----------  -----  ------  ------  -------  ---------  ------  ------  ------  ------  ---------------  ---------------
+interaction  1611   0.8700  0.8759  0.5429   0.8760     0.9978  0.9330  0.8828  0.9781  0:0.134 1:0.866  0:0.014 1:0.986
+
+Checkpoint Regression Calibration Applied
+task      cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
+--------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  ------
+affinity  1042   0.7669  1.1370     7.0153     0.9732    1.3849  1.7254  0.4908   0.4500    0.2409
+```
