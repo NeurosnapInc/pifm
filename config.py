@@ -51,6 +51,12 @@ REGRESSION_HUBER_DELTA = 1.0
 AFFINITY_NORMALIZATION = "source"  # "global" or "source"
 MIN_SOURCE_AFFINITY_LABELS = 20
 
+### Interaction Classification
+INTERACTION_LOSS = "focal"  # "ce" or "focal"
+FOCAL_GAMMA = 2.0
+INTERACTION_POS_NEG_RATIO = 5.0
+SOURCE_BALANCED_SAMPLING = True
+
 ### Architecture
 ADAPTER_DIM = 64
 DROPOUT = 0.1

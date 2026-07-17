@@ -30,6 +30,9 @@ from config import (
   DROPOUT,
   EPOCHS,
   EVAL_MAX_TOKENS_PER_BATCH,
+  FOCAL_GAMMA,
+  INTERACTION_LOSS,
+  INTERACTION_POS_NEG_RATIO,
   LR,
   CLASSIFICATION_SELECTION_METRIC,
   MIN_CLASSIFICATION_VAL_LABELS,
@@ -41,6 +44,7 @@ from config import (
   REGRESSION_LOSS,
   REGRESSION_SELECTION_METRIC,
   REGRESSION_HEAD_HIDDEN,
+  SOURCE_BALANCED_SAMPLING,
   TRAIN_CACHE_PATH,
   TRAIN_MAX_TOKENS_PER_BATCH,
   TRAINING_SEED,
@@ -63,6 +67,18 @@ PIN_MEMORY = DEVICE.type == "cuda"
 USE_FUSED_ADAMW = DEVICE.type == "cuda"
 
 
+class FocalCrossEntropyLoss(nn.Module):
+  def __init__(self, weight=None, gamma=2.0):
+    super().__init__()
+    self.register_buffer("weight", weight if weight is not None else None)
+    self.gamma = gamma
+
+  def forward(self, logits, targets):
+    ce = F.cross_entropy(logits, targets, weight=self.weight, reduction="none")
+    pt = torch.exp(-ce)
+    return ((1.0 - pt).pow(self.gamma) * ce).mean()
+
+
 def _set_training_seed(seed: int):
   random.seed(seed)
   np.random.seed(seed)
@@ -79,7 +95,11 @@ def _build_classification_loss(labels: torch.Tensor, mask: torch.Tensor):
   w0 = total / (2.0 * max(1, n0))
   w1 = total / (2.0 * max(1, n1))
   weights = torch.tensor([w0, w1], dtype=torch.float, device=DEVICE)
-  return nn.CrossEntropyLoss(weight=weights)
+  if INTERACTION_LOSS == "ce":
+    return nn.CrossEntropyLoss(weight=weights)
+  if INTERACTION_LOSS == "focal":
+    return FocalCrossEntropyLoss(weight=weights, gamma=FOCAL_GAMMA)
+  raise ValueError(f"Unsupported INTERACTION_LOSS={INTERACTION_LOSS!r}")
 
 
 def _metric_from_preds(labels, preds, dtype: str) -> Tuple[str, float, Dict[str, float]]:
@@ -164,14 +184,41 @@ def _compute_sample_weights(split_payload, task_order):
   inv_task_counts = torch.zeros_like(task_counts)
   nonzero = task_counts > 0
   inv_task_counts[nonzero] = 1.0 / task_counts[nonzero]
+  task_to_idx = {task_name: idx for idx, task_name in enumerate(task_order)}
+  sources = split_payload.get("sources", ["unknown"] * len(label_mask))
+  source_counts = Counter(sources)
+  n_sources = max(1, len(source_counts))
+  interaction_idx = task_to_idx.get("interaction")
+  interaction_labels = split_payload["raw_labels"][:, interaction_idx] if interaction_idx is not None else None
+  interaction_mask = label_mask[:, interaction_idx] if interaction_idx is not None else None
+
+  interaction_class_weights = {}
+  if interaction_idx is not None:
+    n_pos = int(((interaction_labels > 0.5) & interaction_mask).sum().item())
+    n_neg = int(((interaction_labels <= 0.5) & interaction_mask).sum().item())
+    if n_pos > 0 and n_neg > 0:
+      # Cap expected sampled positives so negatives are seen often enough each epoch.
+      pos_mass = INTERACTION_POS_NEG_RATIO / (INTERACTION_POS_NEG_RATIO + 1.0)
+      neg_mass = 1.0 / (INTERACTION_POS_NEG_RATIO + 1.0)
+      interaction_class_weights = {
+        1: pos_mass / n_pos,
+        0: neg_mass / n_neg,
+      }
 
   sample_weights = []
-  for row_mask in label_mask:
+  for sample_idx, row_mask in enumerate(label_mask):
     present = row_mask.nonzero(as_tuple=False).view(-1)
     if present.numel() == 0:
       sample_weights.append(1.0)
       continue
-    sample_weights.append(float(inv_task_counts[present].mean().item()))
+
+    weight = float(inv_task_counts[present].mean().item())
+    if interaction_idx is not None and bool(row_mask[interaction_idx]) and interaction_class_weights:
+      label = 1 if float(interaction_labels[sample_idx].item()) > 0.5 else 0
+      weight *= interaction_class_weights[label]
+    if SOURCE_BALANCED_SAMPLING:
+      weight *= len(label_mask) / (n_sources * source_counts[sources[sample_idx]])
+    sample_weights.append(weight)
 
   weights = torch.tensor(sample_weights, dtype=torch.double)
   weights /= weights.sum()
@@ -642,6 +689,10 @@ torch.save(
       "affinity_normalization": AFFINITY_NORMALIZATION,
       "min_source_affinity_labels": MIN_SOURCE_AFFINITY_LABELS,
       "source_regression_stats": source_regression_stats,
+      "interaction_loss": INTERACTION_LOSS,
+      "focal_gamma": FOCAL_GAMMA,
+      "interaction_pos_neg_ratio": INTERACTION_POS_NEG_RATIO,
+      "source_balanced_sampling": SOURCE_BALANCED_SAMPLING,
       "calibration": calibration,
       "training_seed": TRAINING_SEED,
       "run_date": run_date,
