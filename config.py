@@ -48,7 +48,7 @@ REGRESSION_SELECTION_METRIC = "normalized_mae"  # "normalized_mae" or "pearson"
 ### Affinity Regression
 REGRESSION_LOSS = "huber"  # "mse" or "huber"
 REGRESSION_HUBER_DELTA = 1.0
-AFFINITY_NORMALIZATION = "source"  # "global" or "source"
+AFFINITY_NORMALIZATION = "global"  # "global" or "source"
 MIN_SOURCE_AFFINITY_LABELS = 20
 
 ### Interaction Classification
