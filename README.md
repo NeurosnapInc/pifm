@@ -337,13 +337,17 @@ Although the machine learning architecture is substantially different, the overa
 
 ## Train Log
 ### Version 2026-07-13
+#### Changes
 - Switched tokenization from a random row split to a cluster-disjoint split to reduce sequence/homology leakage across train, validation, and test.
 - Replaced naive random cluster assignment with label-aware greedy split assignment over connected cluster components. The splitter now balances total samples, interaction positives, interaction negatives, affinity-labeled samples, and source counts where possible.
 - Standardized affinity labels to `pKd` in the aggregated DuckDB/tokenized cache so regression targets are comparable across PPB-Affinity, SKEMPI, and user-provided affinity sources.
 - Updated training checkpoint selection to avoid early stopping on misleading aggregate `F1`/`MAE`. Classification selection now uses `AUROC` by default, regression uses normalized `MAE`, and tasks with too few validation labels are ignored for checkpoint selection.
 - Increased token-capped batch sizes for A100 training throughput.
-- Result: the affinity validation set is now large enough to interpret (`n=1042`) and the model learns a moderate affinity signal. The interaction head has good ranking signal (`AUROC=0.8828`) but poor thresholded negative detection, still predicting almost everything as positive.
-##### Validation Split
+
+#### Results
+- The affinity validation set is now large enough to interpret (`n=1042`) and the model learns a moderate affinity signal. The interaction head has good ranking signal (`AUROC=0.8828`) but poor thresholded negative detection, still predicting almost everything as positive.
+
+#### Validation Split
 ```
 Dataset size (validation): 1611 pairs
 
@@ -368,7 +372,7 @@ task      cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson
 affinity  1042   0.7669  1.1370     7.0153     0.9732    1.3849  1.7254  0.4908   0.4500    0.2409
 ```
 
-##### Test Split
+#### Test Split
 ```
 Classification Tasks
 task         n     acc     bal_acc  precision  recall  f1      auroc   auprc   label_ratio      pred_ratio
@@ -389,4 +393,87 @@ Checkpoint Regression Calibration Applied
 task      cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
 --------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  -------
 affinity  1042   0.7669  1.1370     6.8773     0.9073    1.8411  2.3983  0.0077   0.0571    -0.2576
+```
+
+### Version 2026-07-18
+#### Changes
+- Added negative-aware interaction training to address the previous failure mode where the model ranked interactions well but predicted almost everything as positive.
+- Switched the interaction loss from weighted cross-entropy to configurable focal loss (`INTERACTION_LOSS = "focal"`, `FOCAL_GAMMA = 2.0`).
+- Added weighted sampling controls so each epoch sees a less extreme interaction class balance (`INTERACTION_POS_NEG_RATIO = 5.0`) instead of reflecting the raw positive-heavy dataset distribution.
+- Added source-balanced sampling so high-volume sources do not dominate every training epoch.
+- Switched affinity regression from MSE to Huber loss for more robustness to noisy/outlier pKd labels.
+- Added source-normalized affinity training/reporting to test whether PPB-Affinity and SKEMPI should be normalized separately before regression.
+#### Results
+- Interaction classification improved in the intended direction: calibrated test balanced accuracy increased and the model now predicts negatives at a realistic rate instead of collapsing to nearly all-positive predictions.
+- Calibrated test interaction metrics were `AUROC=0.9233`, `AUPRC=0.9871`, `balanced_acc=0.7324`, `specificity=0.5370`, and `MCC=0.4638`.
+- Negatome negative handling improved materially on the test split: `152/216` negatives were correctly predicted (`specificity=0.7037` for the uncalibrated source-specific row).
+- Affinity remains weak overall. Source-specific test ranking is better for SKEMPI (`Pearson=0.4555`, `Spearman=0.5930`) than PPB-Affinity (`Pearson=0.2416`, `Spearman=0.2549`).
+- Source-normalized affinity regression did not solve the regression problem: source-normalized test `Pearson=0.2450`, `Spearman=0.2712`, and `R2=0.0011`.
+- Conclusion: keep the negative-aware interaction training changes, but treat source-normalized affinity training as experimental. The next affinity run should likely keep Huber loss but return to global pKd normalization, then consider separate PPB/SKEMPI heads if source bias remains large.
+
+#### Validation Split
+```
+Source-Specific Classification Tasks
+source           task         n    acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn  tp   auroc  auprc   label_ratio  pred_ratio
+---------------  -----------  ---  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  --  ---  -----  ------  -----------  ---------------
+intact_negative  interaction  1    1.0000  1.0000   0.0000     0.0000  1.0000       1.0000      0.0000  0.0000  1    0   0   0    nan    0.0000  0:1.000      0:1.000
+intact_positive  interaction  27   0.1481  0.1481   1.0000     0.1481  -            -           0.2581  0.0000  0    0   23  4    nan    1.0000  1:1.000      0:0.852 1:0.148
+negatome         interaction  215  0.6279  0.6279   0.0000     0.0000  0.6279       0.6279      0.0000  0.0000  135  80  0   0    nan    0.0000  0:1.000      0:0.628 1:0.372
+ppb_affinity     interaction  748  0.9759  0.9759   1.0000     0.9759  -            -           0.9878  0.0000  0    0   18  730  nan    1.0000  1:1.000      0:0.024 1:0.976
+skempi           interaction  306  1.0000  1.0000   1.0000     1.0000  -            -           1.0000  0.0000  0    0   0   306  nan    1.0000  1:1.000      1:1.000
+string           interaction  314  0.9268  0.9268   1.0000     0.9268  -            -           0.9620  0.0000  0    0   23  291  nan    1.0000  1:1.000      0:0.073 1:0.927
+
+Source-Specific Regression Tasks
+source        task      n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
+------------  --------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
+ppb_affinity  affinity  748  7.2421      2.0063     7.4813     0.8647    1.6852  2.0780  0.1476   0.1423    -0.0727
+skempi        affinity  294  6.4336      1.7855     7.1102     0.8845    1.3561  1.6045  0.5869   0.6298    0.1924
+
+Source-Normalized Regression Tasks
+task      n     label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
+--------  ----  ----------  ---------  ---------  --------  ------  ------  -------  --------  ------
+affinity  1042  -0.0000     1.0000     0.1925     0.4650    0.8172  0.9990  0.2746   0.3027    0.0021
+
+Checkpoint Classification Calibration Applied
+task         cal_n  thr     acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp   fn  tp    auroc   auprc   label_ratio      pred_ratio
+-----------  -----  ------  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  ---  --  ----  ------  ------  ---------------  ---------------
+interaction  1611   0.0700  0.9162  0.7501   0.9297     0.9771  0.5231       0.5231      0.9528  0.5955  113  103  32  1363  0.8911  0.9713  0:0.134 1:0.866  0:0.090 1:0.910
+
+Checkpoint Regression Calibration Applied
+task      cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
+--------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  ------
+affinity  1042   0.6439  2.2642     7.0138     0.5706    1.4919  1.8961  0.2884   0.2590    0.0832
+```
+
+#### Test Split
+```
+Source-Specific Classification Tasks
+source           task         n    acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn   tp   auroc  auprc   label_ratio  pred_ratio
+---------------  -----------  ---  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  ---  ---  -----  ------  -----------  ---------------
+intact_positive  interaction  22   0.1364  0.1364   1.0000     0.1364  -            -           0.2400  0.0000  0    0   19   3    nan    1.0000  1:1.000      0:0.864 1:0.136
+negatome         interaction  216  0.7037  0.7037   0.0000     0.0000  0.7037       0.7037      0.0000  0.0000  152  64  0    0    nan    0.0000  0:1.000      0:0.704 1:0.296
+ppb_affinity     interaction  761  0.8489  0.8489   1.0000     0.8489  -            -           0.9183  0.0000  0    0   115  646  nan    1.0000  1:1.000      0:0.151 1:0.849
+skempi           interaction  300  1.0000  1.0000   1.0000     1.0000  -            -           1.0000  0.0000  0    0   0    300  nan    1.0000  1:1.000      1:1.000
+string           interaction  314  0.9777  0.9777   1.0000     0.9777  -            -           0.9887  0.0000  0    0   7    307  nan    1.0000  1:1.000      0:0.022 1:0.978
+
+Source-Specific Regression Tasks
+source        task      n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
+------------  --------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
+ppb_affinity  affinity  761  7.3170      2.0450     7.6825     0.9183    1.6317  2.0620  0.2416   0.2549    -0.0166
+skempi        affinity  281  7.9862      2.3037     7.1203     0.7470    1.7440  2.2466  0.4555   0.5930    0.0490
+
+Source-Normalized Regression Tasks
+task      n     label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
+--------  ----  ----------  ---------  ---------  --------  ------  ------  -------  --------  ------
+affinity  1042  -0.0000     1.0000     0.0292     0.4860    0.7869  0.9995  0.2450   0.2712    0.0011
+
+Checkpoint Classification Calibration Applied
+task         cal_n  thr     acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp   fn   tp    auroc   auprc   label_ratio      pred_ratio
+-----------  -----  ------  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  ---  ---  ----  ------  ------  ---------------  ---------------
+interaction  1611   0.0700  0.8754  0.7324   0.9284     0.9277  0.5370       0.5370      0.9280  0.4638  116  100  101  1296  0.9233  0.9871  0:0.134 1:0.866  0:0.135 1:0.865
+
+Checkpoint Regression Calibration Applied
+task      cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
+--------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  ------
+affinity  1042   0.6439  2.2642     7.1132     0.5861    1.6253  2.1122  0.2407   0.2844    0.0245
 ```
