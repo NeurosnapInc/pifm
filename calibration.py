@@ -7,16 +7,13 @@ from collections import Counter
 import torch
 from sklearn.metrics import (
   accuracy_score,
-  average_precision_score,
-  balanced_accuracy_score,
   f1_score,
   mean_absolute_error,
   mean_squared_error,
-  precision_score,
   r2_score,
-  recall_score,
-  roc_auc_score,
   matthews_corrcoef,
+  roc_auc_score,
+  average_precision_score,
 )
 
 
@@ -171,18 +168,39 @@ def _binary_confusion_counts(labels, preds):
   return tn, fp, fn, tp
 
 
+def _binary_average_precision(labels, scores):
+  if len(set(labels)) < 2:
+    if all(label == 1 for label in labels):
+      return 1.0
+    if all(label == 0 for label in labels):
+      return 0.0
+    return None
+  return average_precision_score(labels, scores)
+
+
 def classification_report(labels, preds, scores):
   tn, fp, fn, tp = _binary_confusion_counts(labels, preds)
+  total = tn + fp + fn + tp
+  positive_precision = tp / (tp + fp) if (tp + fp) else 0.0
+  positive_recall = tp / (tp + fn) if (tp + fn) else 0.0
   specificity = tn / (tn + fp) if (tn + fp) else None
+  balanced_acc = None
+  if positive_recall is not None and specificity is not None:
+    balanced_acc = (positive_recall + specificity) / 2.0
+  elif positive_recall is not None:
+    balanced_acc = positive_recall
+  elif specificity is not None:
+    balanced_acc = specificity
+
   report = {
-    "acc": accuracy_score(labels, preds),
-    "balanced_acc": balanced_accuracy_score(labels, preds),
-    "precision": precision_score(labels, preds, zero_division=0),
-    "recall": recall_score(labels, preds, zero_division=0),
+    "acc": (tp + tn) / total if total else None,
+    "balanced_acc": balanced_acc,
+    "precision": positive_precision,
+    "recall": positive_recall,
     "specificity": specificity,
     "negative_recall": specificity,
     "f1": f1_score(labels, preds, zero_division=0),
-    "mcc": matthews_corrcoef(labels, preds),
+    "mcc": matthews_corrcoef(labels, preds) if len(set(labels)) >= 2 and len(set(preds)) >= 2 else 0.0,
     "tn": tn,
     "fp": fp,
     "fn": fn,
@@ -190,12 +208,11 @@ def classification_report(labels, preds, scores):
     "label_ratio": _label_ratio_string(labels),
     "pred_ratio": _label_ratio_string(preds),
   }
-  try:
+  if len(set(labels)) >= 2:
     report["auroc"] = roc_auc_score(labels, scores)
-    report["auprc"] = average_precision_score(labels, scores)
-  except ValueError:
+  else:
     report["auroc"] = None
-    report["auprc"] = None
+  report["auprc"] = _binary_average_precision(labels, scores)
   return report
 
 
