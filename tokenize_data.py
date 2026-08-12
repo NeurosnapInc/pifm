@@ -18,11 +18,14 @@ from transformers import T5Tokenizer
 
 from config import (
   AGGREGATED_DB_PATH,
+  AFFINITY_SOURCE_TASKS,
+  AFFINITY_TASK_MODE,
   CLUSTER_COVERAGE,
   CLUSTER_MIN_SEQ_ID,
   MAX_LENGTH,
   MMSEQS_BINARY,
   MODEL_NAME,
+  REGRESSION_LOSS,
   SEQUENCE_CLUSTER_FASTA_PATH,
   SEQUENCE_CLUSTER_TSV_PATH,
   SEQUENCE_CLUSTER_WORK_DIR,
@@ -52,9 +55,59 @@ TASK_SPECS = {
     "dtype": "float",
     "head_type": "pair_regression",
     "num_classes": None,
-    "loss": "mse",
+    "loss": REGRESSION_LOSS,
   },
 }
+
+
+def _affinity_task_name(source: str) -> str:
+  return f"affinity_{source}"
+
+
+def _affinity_task_spec(task_name: str, source: str):
+  return {
+    "task_name": task_name,
+    "dtype": "float",
+    "head_type": "pair_regression",
+    "num_classes": None,
+    "loss": REGRESSION_LOSS,
+    "base_task": "affinity",
+    "source": source,
+  }
+
+
+def _build_task_definitions(sample_rows):
+  task_order: List[str] = []
+  task_metas = {}
+
+  if any(row[3] is not None for row in sample_rows):
+    task_order.append("interaction")
+    task_metas["interaction"] = TASK_SPECS["interaction"]
+
+  affinity_sources = sorted({row[0] for row in sample_rows if row[4] is not None})
+  if AFFINITY_TASK_MODE == "shared":
+    if affinity_sources:
+      task_order.append("affinity")
+      task_metas["affinity"] = TASK_SPECS["affinity"]
+  elif AFFINITY_TASK_MODE == "source_specific":
+    configured_sources = set(AFFINITY_SOURCE_TASKS)
+    for source in AFFINITY_SOURCE_TASKS:
+      if source not in affinity_sources:
+        continue
+      task_name = _affinity_task_name(source)
+      task_order.append(task_name)
+      task_metas[task_name] = _affinity_task_spec(task_name, source)
+
+    skipped_sources = sorted(set(affinity_sources) - configured_sources)
+    if skipped_sources:
+      print(
+        "Warning: affinity labels skipped for unconfigured sources: "
+        + ", ".join(skipped_sources)
+      )
+  else:
+    raise ValueError(f"Unsupported AFFINITY_TASK_MODE={AFFINITY_TASK_MODE!r}")
+
+  return task_order, task_metas
 
 
 def _validate_split_fractions():
@@ -205,7 +258,6 @@ def _record_unit_set(record, sequence_to_unit: Dict[str, str]):
 def _record_label_stats(record) -> Counter:
   stats = Counter(total=1)
   interaction_idx = record["task_to_idx"].get("interaction")
-  affinity_idx = record["task_to_idx"].get("affinity")
 
   if interaction_idx is not None and record["mask"][interaction_idx]:
     if record["labels"][interaction_idx] > 0.5:
@@ -213,8 +265,9 @@ def _record_label_stats(record) -> Counter:
     else:
       stats["interaction_neg"] += 1
 
-  if affinity_idx is not None and record["mask"][affinity_idx]:
-    stats["affinity"] += 1
+  for affinity_idx in record["affinity_task_indices"]:
+    if record["mask"][affinity_idx]:
+      stats["affinity"] += 1
 
   stats[f"source:{record['source']}"] += 1
   return stats
@@ -383,17 +436,19 @@ def _print_split_audit(split_records, task_order, task_to_idx):
       pos = len(labels) - neg
       print(f"    interaction: labels={len(labels)} neg={neg} pos={pos}")
 
-    if "affinity" in task_to_idx:
-      task_idx = task_to_idx["affinity"]
+    for task_name in task_order:
+      if not task_name.startswith("affinity"):
+        continue
+      task_idx = task_to_idx[task_name]
       values = [record["labels"][task_idx] for record in rows if record["mask"][task_idx]]
       if values:
         tensor = torch.tensor(values, dtype=torch.float)
         print(
-          f"    affinity: labels={len(values)} "
+          f"    {task_name}: labels={len(values)} "
           f"mean={tensor.mean().item():.4f} std={tensor.std(unbiased=False).item():.4f}"
         )
       else:
-        print("    affinity: labels=0")
+        print(f"    {task_name}: labels=0")
 
 
 def _compute_regression_stats(records, task_order, task_metas):
@@ -510,18 +565,17 @@ try:
   if not sample_rows:
     raise ValueError(f"No samples found in {AGGREGATED_DB_PATH}")
 
-  task_order: List[str] = []
-  for task_name in ("interaction", "affinity"):
-    if task_name == "interaction" and any(row[3] is not None for row in sample_rows):
-      task_order.append(task_name)
-    if task_name == "affinity" and any(row[4] is not None for row in sample_rows):
-      task_order.append(task_name)
+  task_order, task_metas = _build_task_definitions(sample_rows)
 
   if not task_order:
     raise ValueError("No supervised labels found. Populate interaction_label and/or affinity_pkd before tokenization.")
 
-  task_metas = {task_name: TASK_SPECS[task_name] for task_name in task_order}
   task_to_idx = {task_name: idx for idx, task_name in enumerate(task_order)}
+  affinity_task_indices = [
+    idx
+    for idx, task_name in enumerate(task_order)
+    if task_metas[task_name].get("base_task") == "affinity" or task_name == "affinity"
+  ]
 
   records = []
   for source, group1, group2, interaction_label, affinity_pkd in sample_rows:
@@ -533,10 +587,16 @@ try:
       labels[idx] = _label_from_dtype(interaction_label, "bool")
       mask[idx] = True
 
-    if "affinity" in task_to_idx and affinity_pkd is not None:
+    if AFFINITY_TASK_MODE == "shared" and "affinity" in task_to_idx and affinity_pkd is not None:
       idx = task_to_idx["affinity"]
       labels[idx] = _label_from_dtype(affinity_pkd, "float")
       mask[idx] = True
+    elif AFFINITY_TASK_MODE == "source_specific" and affinity_pkd is not None:
+      task_name = _affinity_task_name(source)
+      if task_name in task_to_idx:
+        idx = task_to_idx[task_name]
+        labels[idx] = _label_from_dtype(affinity_pkd, "float")
+        mask[idx] = True
 
     if not any(mask):
       continue
@@ -551,6 +611,7 @@ try:
         "mask": mask,
         "source": source,
         "task_to_idx": task_to_idx,
+        "affinity_task_indices": affinity_task_indices,
       }
     )
 
@@ -614,6 +675,8 @@ try:
         "max_length": MAX_LENGTH,
         "pad_token_id": tokenizer.pad_token_id,
         "cache_format": "multitask_group_pair_v1",
+        "affinity_task_mode": AFFINITY_TASK_MODE,
+        "affinity_source_tasks": list(AFFINITY_SOURCE_TASKS),
       },
       "normalization": {
         "train_mean": train_means,

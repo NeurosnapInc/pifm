@@ -46,6 +46,8 @@ CLASSIFICATION_SELECTION_METRIC = "auroc"  # "auroc" or "balanced_accuracy"
 REGRESSION_SELECTION_METRIC = "normalized_mae"  # "normalized_mae" or "pearson"
 
 ### Affinity Regression
+AFFINITY_TASK_MODE = "source_specific"  # "shared" or "source_specific"
+AFFINITY_SOURCE_TASKS = ("ppb_affinity", "skempi")
 REGRESSION_LOSS = "huber"  # "mse" or "huber"
 REGRESSION_HUBER_DELTA = 1.0
 AFFINITY_NORMALIZATION = "global"  # "global" or "source"

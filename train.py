@@ -24,6 +24,8 @@ from calibration import fit_posthoc_calibration
 from config import (
   ADAPTER_DIM,
   AFFINITY_NORMALIZATION,
+  AFFINITY_SOURCE_TASKS,
+  AFFINITY_TASK_MODE,
   BATCH_SAMPLER_SEED,
   BATCH_SIZE,
   CLASSIFICATION_HEAD_HIDDEN,
@@ -227,7 +229,11 @@ def _compute_sample_weights(split_payload, task_order):
   return weights, task_label_counts
 
 
-def _compute_source_regression_stats(split_payload, task_order, global_means, global_stds):
+def _is_affinity_task(task_name, task_meta):
+  return task_name == "affinity" or task_meta.get("base_task") == "affinity"
+
+
+def _compute_source_regression_stats(split_payload, task_order, task_metas, global_means, global_stds):
   source_stats = {}
   sources = split_payload.get("sources")
   if AFFINITY_NORMALIZATION != "source" or sources is None:
@@ -236,7 +242,7 @@ def _compute_source_regression_stats(split_payload, task_order, global_means, gl
   label_mask = split_payload["label_mask"]
   raw_labels = split_payload["raw_labels"]
   for task_idx, task_name in enumerate(task_order):
-    if task_name != "affinity":
+    if not _is_affinity_task(task_name, task_metas[task_name]):
       continue
 
     values_by_source = {}
@@ -350,7 +356,13 @@ pad_token_id = payload["config"]["pad_token_id"]
 normalization = payload["normalization"]
 regression_means = normalization["train_mean"]
 regression_stds = normalization["train_std"]
-source_regression_stats = _compute_source_regression_stats(train_split, task_order, regression_means, regression_stds)
+source_regression_stats = _compute_source_regression_stats(
+  train_split,
+  task_order,
+  task_metas,
+  regression_means,
+  regression_stds,
+)
 
 train_ds = MultiTaskGroupPairDataset(train_split)
 val_ds = MultiTaskGroupPairDataset(val_split)
@@ -686,6 +698,8 @@ torch.save(
       "regression_std": regression_stds,
       "regression_loss": REGRESSION_LOSS,
       "regression_huber_delta": REGRESSION_HUBER_DELTA,
+      "affinity_task_mode": AFFINITY_TASK_MODE,
+      "affinity_source_tasks": list(AFFINITY_SOURCE_TASKS),
       "affinity_normalization": AFFINITY_NORMALIZATION,
       "min_source_affinity_labels": MIN_SOURCE_AFFINITY_LABELS,
       "source_regression_stats": source_regression_stats,
