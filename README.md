@@ -580,3 +580,28 @@ task      cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson
 --------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  -------
 affinity  1042   0.6030  2.4132     6.9395     0.5578    1.7299  2.2676  0.0227   0.0249    -0.1243
 ```
+
+### Version 2026-08-12
+#### Changes
+- Stopped treating affinity as one shared regression task for the next experiment.
+- Added configurable affinity task construction with `AFFINITY_TASK_MODE = "source_specific"` and `AFFINITY_SOURCE_TASKS = ("ppb_affinity", "skempi")`.
+- Tokenization now emits separate source-specific affinity regression heads:
+  - `affinity_ppb_affinity`
+  - `affinity_skempi`
+- Kept the interaction head shared so the classifier still learns from all interaction-labeled sources.
+- Kept global pKd normalization and Huber regression loss for this run (`AFFINITY_NORMALIZATION = "global"`, `REGRESSION_LOSS = "huber"`).
+- Training checkpoints now record the affinity task mode and configured affinity sources.
+- Source-normalized regression utilities now identify affinity tasks via metadata, not only the old literal `affinity` task name.
+
+#### Rationale
+- The 2026-07-19 run showed that interaction classification is now useful after negative-aware training, but affinity regression remained weak on the test split.
+- PPB-Affinity and SKEMPI appear to behave differently enough that one shared affinity head is likely underfitting source-specific label structure.
+- This change isolates PPB and SKEMPI affinity prediction at the head level while preserving the same frozen ProstT5 encoder, adapter, group pooling, and pair representation.
+
+#### Next Run
+- Re-tokenization is required because the tokenized cache task layout changes from one `affinity` task to separate source-specific affinity tasks.
+
+```bash
+python tokenize_data.py
+python train.py
+```
