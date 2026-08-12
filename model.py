@@ -3,6 +3,7 @@ Shared model and data utilities for multitask protein-group pair training.
 """
 
 import math
+import hashlib
 
 import torch
 import torch.nn as nn
@@ -19,21 +20,40 @@ from config import (
 )
 
 
+def token_ids_key(input_ids: torch.Tensor) -> str:
+  ids = input_ids.detach().cpu().to(torch.int32).contiguous()
+  return hashlib.sha256(ids.numpy().tobytes()).hexdigest()
+
+
+def load_backbone_embedding_cache(path, expected_model_name=None):
+  payload = torch.load(path, map_location="cpu")
+  if expected_model_name is not None and payload.get("model_name") != expected_model_name:
+    raise ValueError(
+      f"Embedding cache model mismatch: expected {expected_model_name!r}, "
+      f"found {payload.get('model_name')!r} in {path}"
+    )
+  return payload["embeddings"], payload
+
+
 class MultiTaskGroupPairDataset(Dataset):
-  def __init__(self, split_payload):
+  def __init__(self, split_payload, embedding_cache=None):
     self.samples = []
     for idx, length in enumerate(split_payload["lengths"]):
-      self.samples.append(
-        {
-          "group1_input_ids": split_payload["group1_input_ids"][idx],
-          "group2_input_ids": split_payload["group2_input_ids"][idx],
-          "raw_labels": split_payload["raw_labels"][idx],
-          "normalized_labels": split_payload["normalized_labels"][idx],
-          "label_mask": split_payload["label_mask"][idx],
-          "length": int(length),
-          "source": split_payload.get("sources", ["unknown"] * len(split_payload["lengths"]))[idx],
-        }
-      )
+      group1_input_ids = split_payload["group1_input_ids"][idx]
+      group2_input_ids = split_payload["group2_input_ids"][idx]
+      sample = {
+        "group1_input_ids": group1_input_ids,
+        "group2_input_ids": group2_input_ids,
+        "raw_labels": split_payload["raw_labels"][idx],
+        "normalized_labels": split_payload["normalized_labels"][idx],
+        "label_mask": split_payload["label_mask"][idx],
+        "length": int(length),
+        "source": split_payload.get("sources", ["unknown"] * len(split_payload["lengths"]))[idx],
+      }
+      if embedding_cache is not None:
+        sample["group1_embeddings"] = [embedding_cache[token_ids_key(ids)] for ids in group1_input_ids]
+        sample["group2_embeddings"] = [embedding_cache[token_ids_key(ids)] for ids in group2_input_ids]
+      self.samples.append(sample)
 
   def __len__(self):
     return len(self.samples)
@@ -174,8 +194,9 @@ class MultiTaskGroupPairModel(nn.Module):
   ):
     super().__init__()
     self.base = base_model
-    for param in self.base.parameters():
-      param.requires_grad = False
+    if self.base is not None:
+      for param in self.base.parameters():
+        param.requires_grad = False
 
     self.adapter = Adapter(embed_dim, adapter_dim, dropout_prob=dropout)
     self.residue_pool = AttentionPool(embed_dim, hidden=RESIDUE_POOL_HIDDEN, dropout=dropout)
@@ -193,9 +214,14 @@ class MultiTaskGroupPairModel(nn.Module):
       hidden_dim = regression_head_hidden if meta.get("dtype") == "float" else classification_head_hidden
       self.heads[task_name] = PairTaskHead(PAIR_MLP_HIDDEN, task_output_dims[task_name], hidden_dim, dropout=dropout)
 
-  def encode_shared_tokens(self, input_ids, attention_mask):
-    out = self.base(input_ids=input_ids.long(), attention_mask=attention_mask.long())
-    token_repr = out.last_hidden_state
+  def encode_shared_tokens(self, input_ids, attention_mask, precomputed_embeddings=None):
+    if precomputed_embeddings is None:
+      if self.base is None:
+        raise ValueError("A base model is required when precomputed embeddings are not provided.")
+      out = self.base(input_ids=input_ids.long(), attention_mask=attention_mask.long())
+      token_repr = out.last_hidden_state
+    else:
+      token_repr = precomputed_embeddings.to(dtype=self.adapter.norm.weight.dtype)
     return token_repr + self.adapter(token_repr)
 
   def _pool_group(self, chain_embeddings, chain_to_sample, chain_to_group, batch_size: int, group_id: int):
@@ -223,8 +249,8 @@ class MultiTaskGroupPairModel(nn.Module):
       dim=-1,
     )
 
-  def forward(self, input_ids, attention_mask, chain_to_sample, chain_to_group, batch_size):
-    shared_tokens = self.encode_shared_tokens(input_ids, attention_mask)
+  def forward(self, input_ids, attention_mask, chain_to_sample, chain_to_group, batch_size, precomputed_embeddings=None):
+    shared_tokens = self.encode_shared_tokens(input_ids, attention_mask, precomputed_embeddings=precomputed_embeddings)
     chain_embeddings = self.residue_pool(shared_tokens, attention_mask)
     group1_embeddings = self._pool_group(chain_embeddings, chain_to_sample, chain_to_group, batch_size, group_id=0)
     group2_embeddings = self._pool_group(chain_embeddings, chain_to_sample, chain_to_group, batch_size, group_id=1)
@@ -252,26 +278,45 @@ def output_dim_from_meta(meta, labels, mask):
 
 def collate_multitask_batch(batch, pad_token_id, include_sources=False):
   flat_input_ids = []
+  flat_embeddings = []
   chain_to_sample = []
   chain_to_group = []
+  use_embeddings = "group1_embeddings" in batch[0]
 
   for sample_idx, sample in enumerate(batch):
-    for ids in sample["group1_input_ids"]:
-      flat_input_ids.append(ids)
+    group1_values = sample["group1_embeddings"] if use_embeddings else sample["group1_input_ids"]
+    group2_values = sample["group2_embeddings"] if use_embeddings else sample["group2_input_ids"]
+    for value in group1_values:
+      if use_embeddings:
+        flat_embeddings.append(value)
+      else:
+        flat_input_ids.append(value)
       chain_to_sample.append(sample_idx)
       chain_to_group.append(0)
-    for ids in sample["group2_input_ids"]:
-      flat_input_ids.append(ids)
+    for value in group2_values:
+      if use_embeddings:
+        flat_embeddings.append(value)
+      else:
+        flat_input_ids.append(value)
       chain_to_sample.append(sample_idx)
       chain_to_group.append(1)
 
-  padded_ids = nn.utils.rnn.pad_sequence(flat_input_ids, batch_first=True, padding_value=pad_token_id)
-  attention_mask = padded_ids.ne(pad_token_id).long()
+  if use_embeddings:
+    padded_ids = None
+    padded_embeddings = nn.utils.rnn.pad_sequence(flat_embeddings, batch_first=True, padding_value=0.0)
+    lengths = torch.tensor([embedding.shape[0] for embedding in flat_embeddings], dtype=torch.long)
+    positions = torch.arange(padded_embeddings.shape[1]).unsqueeze(0)
+    attention_mask = positions.lt(lengths.unsqueeze(1)).long()
+  else:
+    padded_ids = nn.utils.rnn.pad_sequence(flat_input_ids, batch_first=True, padding_value=pad_token_id)
+    padded_embeddings = None
+    attention_mask = padded_ids.ne(pad_token_id).long()
   raw_labels = torch.stack([sample["raw_labels"] for sample in batch])
   normalized_labels = torch.stack([sample["normalized_labels"] for sample in batch])
   label_mask = torch.stack([sample["label_mask"] for sample in batch])
   output = (
     padded_ids,
+    padded_embeddings,
     attention_mask,
     torch.tensor(chain_to_sample, dtype=torch.long),
     torch.tensor(chain_to_group, dtype=torch.long),

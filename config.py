@@ -28,6 +28,9 @@ SEQUENCE_CLUSTER_WORK_DIR = Path("data/tokenized/mmseqs_tmp")
 MAX_LENGTH = 1024 * 2
 TOKENIZED_DATA_DIR = Path("data/tokenized")
 TRAIN_CACHE_PATH = TOKENIZED_DATA_DIR / "multitask_group_pair_prostt5_tokens.pt"
+BACKBONE_EMBEDDING_CACHE_PATH = TOKENIZED_DATA_DIR / "prostt5_backbone_embeddings.pt"
+USE_BACKBONE_EMBEDDING_CACHE = True
+EMBEDDING_CACHE_MAX_TOKENS_PER_BATCH = 32768
 
 ### Optimization
 BATCH_SIZE = 8

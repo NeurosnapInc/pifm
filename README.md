@@ -600,8 +600,10 @@ affinity  1042   0.6030  2.4132     6.9395     0.5578    1.7299  2.2676  0.0227 
 
 #### Next Run
 - Re-tokenization is required because the tokenized cache task layout changes from one `affinity` task to separate source-specific affinity tasks.
+- Frozen ProstT5 backbone embeddings can optionally be cached after tokenization to avoid re-running the transformer during training and validation.
 
 ```bash
 python tokenize_data.py
+python cache_embeddings.py
 python train.py
 ```

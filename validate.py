@@ -19,6 +19,7 @@ from calibration import (
 )
 from config import (
   ADAPTER_DIM,
+  BACKBONE_EMBEDDING_CACHE_PATH,
   BATCH_SIZE,
   CLASSIFICATION_HEAD_HIDDEN,
   DROPOUT,
@@ -26,12 +27,14 @@ from config import (
   MODEL_NAME,
   REGRESSION_HEAD_HIDDEN,
   TOKENIZED_DATA_DIR,
+  USE_BACKBONE_EMBEDDING_CACHE,
 )
 from model import (
   MultiTaskBatchSampler,
   MultiTaskGroupPairDataset,
   MultiTaskGroupPairModel,
   collate_multitask_batch,
+  load_backbone_embedding_cache,
   output_dim_from_meta,
 )
 
@@ -222,7 +225,24 @@ def main():
   regression_stds = payload["normalization"]["train_std"].to(DEVICE)
   source_regression_stats = checkpoint["config"].get("source_regression_stats", {})
 
-  dataset = MultiTaskGroupPairDataset(split_payload)
+  embedding_cache = None
+  embedding_cache_payload = None
+  if USE_BACKBONE_EMBEDDING_CACHE and BACKBONE_EMBEDDING_CACHE_PATH.exists():
+    embedding_cache, embedding_cache_payload = load_backbone_embedding_cache(
+      BACKBONE_EMBEDDING_CACHE_PATH,
+      expected_model_name=checkpoint["config"].get("model_name", MODEL_NAME),
+    )
+    print(
+      f"Using frozen backbone embedding cache from {BACKBONE_EMBEDDING_CACHE_PATH} "
+      f"sequences={embedding_cache_payload.get('num_sequences', len(embedding_cache))}"
+    )
+  elif USE_BACKBONE_EMBEDDING_CACHE:
+    print(
+      f"Backbone embedding cache not found at {BACKBONE_EMBEDDING_CACHE_PATH}; "
+      "falling back to on-the-fly ProstT5 encoding."
+    )
+
+  dataset = MultiTaskGroupPairDataset(split_payload, embedding_cache=embedding_cache)
   loader = DataLoader(
     dataset,
     batch_sampler=MultiTaskBatchSampler(
@@ -241,12 +261,14 @@ def main():
     train_labels = train_split["raw_labels"][:, task_idx]
     task_output_dims[task_name] = output_dim_from_meta(meta, train_labels, train_mask)
 
-  model_name = checkpoint["config"].get("model_name", MODEL_NAME)
-  base_model = T5EncoderModel.from_pretrained(model_name).to(DEVICE)
-  if DEVICE.type == "cuda":
-    base_model.bfloat16()
-
   embed_dim = checkpoint["config"]["embed_dim"]
+  if embedding_cache is None:
+    model_name = checkpoint["config"].get("model_name", MODEL_NAME)
+    base_model = T5EncoderModel.from_pretrained(model_name).to(DEVICE)
+    if DEVICE.type == "cuda":
+      base_model.bfloat16()
+  else:
+    base_model = None
   model = MultiTaskGroupPairModel(
     base_model,
     task_order,
@@ -281,6 +303,7 @@ def main():
   with torch.no_grad():
     for (
       input_ids,
+      input_embeddings,
       attn_mask,
       chain_to_sample,
       chain_to_group,
@@ -289,7 +312,10 @@ def main():
       label_mask,
       sources,
     ) in tqdm(loader, desc="Validate"):
-      input_ids = input_ids.to(DEVICE, non_blocking=PIN_MEMORY)
+      if input_ids is not None:
+        input_ids = input_ids.to(DEVICE, non_blocking=PIN_MEMORY)
+      if input_embeddings is not None:
+        input_embeddings = input_embeddings.to(DEVICE, non_blocking=PIN_MEMORY)
       attn_mask = attn_mask.to(DEVICE, non_blocking=PIN_MEMORY)
       chain_to_sample = chain_to_sample.to(DEVICE, non_blocking=PIN_MEMORY)
       chain_to_group = chain_to_group.to(DEVICE, non_blocking=PIN_MEMORY)
@@ -297,7 +323,14 @@ def main():
       label_mask = label_mask.to(DEVICE, non_blocking=PIN_MEMORY)
 
       with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=AMP_ENABLED):
-        outputs = model(input_ids, attn_mask, chain_to_sample, chain_to_group, raw_labels.shape[0])
+        outputs = model(
+          input_ids,
+          attn_mask,
+          chain_to_sample,
+          chain_to_group,
+          raw_labels.shape[0],
+          precomputed_embeddings=input_embeddings,
+        )
 
       for task_idx, task_name in enumerate(task_order):
         mask = label_mask[:, task_idx]

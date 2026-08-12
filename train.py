@@ -26,6 +26,7 @@ from config import (
   AFFINITY_NORMALIZATION,
   AFFINITY_SOURCE_TASKS,
   AFFINITY_TASK_MODE,
+  BACKBONE_EMBEDDING_CACHE_PATH,
   BATCH_SAMPLER_SEED,
   BATCH_SIZE,
   CLASSIFICATION_HEAD_HIDDEN,
@@ -50,6 +51,7 @@ from config import (
   TRAIN_CACHE_PATH,
   TRAIN_MAX_TOKENS_PER_BATCH,
   TRAINING_SEED,
+  USE_BACKBONE_EMBEDDING_CACHE,
   WARMUP_RATIO,
   WEIGHT_DECAY,
 )
@@ -58,6 +60,7 @@ from model import (
   MultiTaskGroupPairDataset,
   MultiTaskGroupPairModel,
   collate_multitask_batch,
+  load_backbone_embedding_cache,
   output_dim_from_meta,
   unwrap_model,
 )
@@ -364,8 +367,25 @@ source_regression_stats = _compute_source_regression_stats(
   regression_stds,
 )
 
-train_ds = MultiTaskGroupPairDataset(train_split)
-val_ds = MultiTaskGroupPairDataset(val_split)
+embedding_cache = None
+embedding_cache_payload = None
+if USE_BACKBONE_EMBEDDING_CACHE and BACKBONE_EMBEDDING_CACHE_PATH.exists():
+  embedding_cache, embedding_cache_payload = load_backbone_embedding_cache(
+    BACKBONE_EMBEDDING_CACHE_PATH,
+    expected_model_name=MODEL_NAME,
+  )
+  print(
+    f"Using frozen backbone embedding cache from {BACKBONE_EMBEDDING_CACHE_PATH} "
+    f"sequences={embedding_cache_payload.get('num_sequences', len(embedding_cache))}"
+  )
+elif USE_BACKBONE_EMBEDDING_CACHE:
+  print(
+    f"Backbone embedding cache not found at {BACKBONE_EMBEDDING_CACHE_PATH}; "
+    "falling back to on-the-fly ProstT5 encoding."
+  )
+
+train_ds = MultiTaskGroupPairDataset(train_split, embedding_cache=embedding_cache)
+val_ds = MultiTaskGroupPairDataset(val_split, embedding_cache=embedding_cache)
 train_sample_weights, train_label_counts = _compute_sample_weights(train_split, task_order)
 
 print(f"Loaded cache from {TRAIN_CACHE_PATH}")
@@ -379,9 +399,15 @@ for task_idx, task_name in enumerate(task_order):
     stats_msg = f" mean={regression_means[task_idx].item():.4f} std={regression_stds[task_idx].item():.4f}"
   print(f"Task={task_name} dtype={meta['dtype']} labels(train/val)={train_count}/{val_count}{stats_msg}")
 
-base_model = T5EncoderModel.from_pretrained(MODEL_NAME).to(DEVICE)
-if DEVICE.type == "cuda":
-  base_model.bfloat16()
+if embedding_cache is None:
+  base_model = T5EncoderModel.from_pretrained(MODEL_NAME).to(DEVICE)
+  if DEVICE.type == "cuda":
+    base_model.bfloat16()
+  embed_dim = base_model.config.d_model
+else:
+  base_model = None
+  first_embedding = next(iter(embedding_cache.values()))
+  embed_dim = first_embedding.shape[-1]
 
 train_loader = DataLoader(
   train_ds,
@@ -420,7 +446,6 @@ for task_idx, task_name in enumerate(task_order):
   if meta["dtype"] == "bool":
     criteria[task_name] = _build_classification_loss(train_labels, train_mask)
 
-embed_dim = base_model.config.d_model
 model = MultiTaskGroupPairModel(
   base_model,
   task_order,
@@ -476,11 +501,14 @@ for epoch in range(EPOCHS):
   model.train()
   total_loss = 0.0
 
-  for input_ids, attn_mask, chain_to_sample, chain_to_group, raw_labels, normalized_labels, label_mask, sources in tqdm(
+  for input_ids, input_embeddings, attn_mask, chain_to_sample, chain_to_group, raw_labels, normalized_labels, label_mask, sources in tqdm(
     train_loader,
     desc=f"Epoch {epoch + 1}/{EPOCHS}",
   ):
-    input_ids = input_ids.to(DEVICE, non_blocking=PIN_MEMORY)
+    if input_ids is not None:
+      input_ids = input_ids.to(DEVICE, non_blocking=PIN_MEMORY)
+    if input_embeddings is not None:
+      input_embeddings = input_embeddings.to(DEVICE, non_blocking=PIN_MEMORY)
     attn_mask = attn_mask.to(DEVICE, non_blocking=PIN_MEMORY)
     chain_to_sample = chain_to_sample.to(DEVICE, non_blocking=PIN_MEMORY)
     chain_to_group = chain_to_group.to(DEVICE, non_blocking=PIN_MEMORY)
@@ -489,7 +517,14 @@ for epoch in range(EPOCHS):
     label_mask = label_mask.to(DEVICE, non_blocking=PIN_MEMORY)
 
     with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=AMP_ENABLED):
-      outputs = model(input_ids, attn_mask, chain_to_sample, chain_to_group, raw_labels.shape[0])
+      outputs = model(
+        input_ids,
+        attn_mask,
+        chain_to_sample,
+        chain_to_group,
+        raw_labels.shape[0],
+        precomputed_embeddings=input_embeddings,
+      )
       loss = _compute_multitask_loss(
         outputs,
         raw_labels,
@@ -522,8 +557,11 @@ for epoch in range(EPOCHS):
   }
 
   with torch.no_grad():
-    for input_ids, attn_mask, chain_to_sample, chain_to_group, raw_labels, normalized_labels, label_mask, sources in val_loader:
-      input_ids = input_ids.to(DEVICE, non_blocking=PIN_MEMORY)
+    for input_ids, input_embeddings, attn_mask, chain_to_sample, chain_to_group, raw_labels, normalized_labels, label_mask, sources in val_loader:
+      if input_ids is not None:
+        input_ids = input_ids.to(DEVICE, non_blocking=PIN_MEMORY)
+      if input_embeddings is not None:
+        input_embeddings = input_embeddings.to(DEVICE, non_blocking=PIN_MEMORY)
       attn_mask = attn_mask.to(DEVICE, non_blocking=PIN_MEMORY)
       chain_to_sample = chain_to_sample.to(DEVICE, non_blocking=PIN_MEMORY)
       chain_to_group = chain_to_group.to(DEVICE, non_blocking=PIN_MEMORY)
@@ -532,7 +570,14 @@ for epoch in range(EPOCHS):
       label_mask = label_mask.to(DEVICE, non_blocking=PIN_MEMORY)
 
       with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=AMP_ENABLED):
-        outputs = model(input_ids, attn_mask, chain_to_sample, chain_to_group, raw_labels.shape[0])
+        outputs = model(
+          input_ids,
+          attn_mask,
+          chain_to_sample,
+          chain_to_group,
+          raw_labels.shape[0],
+          precomputed_embeddings=input_embeddings,
+        )
 
       for task_idx, task_name in enumerate(task_order):
         mask = label_mask[:, task_idx]
@@ -707,6 +752,8 @@ torch.save(
       "focal_gamma": FOCAL_GAMMA,
       "interaction_pos_neg_ratio": INTERACTION_POS_NEG_RATIO,
       "source_balanced_sampling": SOURCE_BALANCED_SAMPLING,
+      "used_backbone_embedding_cache": embedding_cache is not None,
+      "backbone_embedding_cache_path": str(BACKBONE_EMBEDDING_CACHE_PATH) if embedding_cache is not None else None,
       "calibration": calibration,
       "training_seed": TRAINING_SEED,
       "run_date": run_date,
