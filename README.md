@@ -607,3 +607,104 @@ python tokenize_data.py
 python cache_embeddings.py
 python train.py
 ```
+
+#### Results
+- Interaction validation improved relative to the previous run: uncalibrated `AUROC=0.9387`, `AUPRC=0.9893`, `balanced_acc=0.8274`, `specificity=0.7130`, and `MCC=0.6322`.
+- Calibrated interaction validation was similar but shifted toward higher recall: `balanced_acc=0.8015`, `specificity=0.6389`, `MCC=0.6400`, and `F1=0.9546`.
+- Source-specific affinity heads helped SKEMPI more than PPB-Affinity. SKEMPI validation reached `Pearson=0.5427`, `Spearman=0.5777`, and calibrated `R2=0.2945`; PPB-Affinity remained weak with `Pearson=0.1317`, `Spearman=0.0918`, and calibrated `R2=0.0174`.
+- Test interaction performance remains strong: uncalibrated `AUROC=0.9515`, `AUPRC=0.9918`, `balanced_acc=0.8658`, `specificity=0.8611`, and calibrated `balanced_acc=0.8190`.
+- Affinity did not generalize. PPB-Affinity stayed weak on test (`Pearson=0.0954`, `Spearman=0.1038`, calibrated `R2=0.0047`) and SKEMPI collapsed despite good validation performance (`Pearson=-0.0434`, `Spearman=-0.0755`, calibrated `R2=-0.4946`).
+- Main readout: keep the interaction setup, but do not treat the source-specific affinity-head experiment as successful. The affinity problem likely needs data/split investigation or a source-specific architecture/training regime beyond just separate heads.
+
+#### Validation Split
+```
+Classification Tasks
+task         n     acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn  tp    auroc   auprc   label_ratio      pred_ratio
+-----------  ----  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  --  ----  ------  ------  ---------------  ---------------
+interaction  1611  0.9112  0.8274   0.9549     0.9419  0.7130       0.7130      0.9484  0.6322  154  62  81  1314  0.9387  0.9893  0:0.134 1:0.866  0:0.146 1:0.854
+
+Regression Tasks
+task                   n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
+---------------------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
+affinity_ppb_affinity  748  7.2421      2.0063     7.3945     0.9290    1.6700  2.1025  0.1317   0.0918    -0.0982
+affinity_skempi        294  6.4336      1.7855     6.8218     1.3400    1.3053  1.5929  0.5427   0.5777    0.2041
+
+Source-Specific Classification Tasks
+source           task         n    acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn  tp   auroc  auprc   label_ratio  pred_ratio
+---------------  -----------  ---  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  --  ---  -----  ------  -----------  ---------------
+intact_negative  interaction  1    1.0000  0.5000   0.0000     0.0000  1.0000       1.0000      0.0000  0.0000  1    0   0   0    -      0.0000  0:1.000      0:1.000
+intact_positive  interaction  27   0.1852  0.1852   1.0000     0.1852  -            -           0.3125  0.0000  0    0   22  5    -      1.0000  1:1.000      0:0.815 1:0.185
+negatome         interaction  215  0.7116  0.3558   0.0000     0.0000  0.7116       0.7116      0.0000  0.0000  153  62  0   0    -      0.0000  0:1.000      0:0.712 1:0.288
+ppb_affinity     interaction  748  0.9733  0.9733   1.0000     0.9733  -            -           0.9864  0.0000  0    0   20  728  -      1.0000  1:1.000      0:0.027 1:0.973
+skempi           interaction  306  1.0000  1.0000   1.0000     1.0000  -            -           1.0000  0.0000  0    0   0   306  -      1.0000  1:1.000      1:1.000
+string           interaction  314  0.8758  0.8758   1.0000     0.8758  -            -           0.9338  0.0000  0    0   39  275  -      1.0000  1:1.000      0:0.124 1:0.876
+
+Source-Specific Regression Tasks
+source        task                   n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
+------------  ---------------------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
+ppb_affinity  affinity_ppb_affinity  748  7.2421      2.0063     7.3945     0.9290    1.6700  2.1025  0.1317   0.0918    -0.0982
+skempi        affinity_skempi        294  6.4336      1.7855     6.8218     1.3400    1.3053  1.5929  0.5427   0.5777    0.2041
+
+Source-Normalized Regression Tasks
+task                   n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
+---------------------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
+affinity_ppb_affinity  748  -0.0000     1.0000     0.0760     0.4630    0.8323  1.0479  0.1317   0.0918    -0.0982
+affinity_skempi        294  0.0000      1.0000     0.2174     0.7505    0.7311  0.8921  0.5427   0.5777    0.2041
+
+Checkpoint Classification Calibration Applied
+task         cal_n  thr     acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn  tp    auroc   auprc   label_ratio      pred_ratio
+-----------  -----  ------  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  --  ----  ------  ------  ---------------  ---------------
+interaction  1611   0.0900  0.9205  0.8015   0.9452     0.9642  0.6389       0.6389      0.9546  0.6400  138  78  50  1345  0.9387  0.9893  0:0.134 1:0.866  0:0.117 1:0.883
+
+Checkpoint Regression Calibration Applied
+task                   cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
+---------------------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  ------
+affinity_ppb_affinity  748    0.2840  5.1420     7.2422     0.2638    1.5614  1.9889  0.1317   0.0918    0.0174
+affinity_skempi        294    0.7234  1.4996     6.4344     0.9693    1.1558  1.4996  0.5427   0.5777    0.2945
+```
+
+#### Test Split
+```
+Classification Tasks
+task         n     acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn   tp    auroc   auprc   label_ratio      pred_ratio
+-----------  ----  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  ---  ----  ------  ------  ---------------  ---------------
+interaction  1613  0.8692  0.8658   0.9759     0.8704  0.8611       0.8611      0.9202  0.5943  186  30  181  1216  0.9515  0.9918  0:0.134 1:0.866  0:0.228 1:0.772
+
+Regression Tasks
+task                   n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
+---------------------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
+affinity_ppb_affinity  761  7.3170      2.0450     7.3219     1.0303    1.7415  2.2004  0.0954   0.1038    -0.1577
+affinity_skempi        281  7.9862      2.3037     6.9642     0.8739    2.0548  2.7000  -0.0434  -0.0755   -0.3736
+
+Source-Specific Classification Tasks
+source           task         n    acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn   tp   auroc  auprc   label_ratio  pred_ratio
+---------------  -----------  ---  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  ---  ---  -----  ------  -----------  ---------------
+intact_positive  interaction  22   0.1818  0.1818   1.0000     0.1818  -            -           0.3077  0.0000  0    0   18   4    -      1.0000  1:1.000      0:0.818 1:0.182
+negatome         interaction  216  0.8611  0.4306   0.0000     0.0000  0.8611       0.8611      0.0000  0.0000  186  30  0    0    -      0.0000  0:1.000      0:0.861 1:0.139
+ppb_affinity     interaction  761  0.8476  0.8476   1.0000     0.8476  -            -           0.9175  0.0000  0    0   116  645  -      1.0000  1:1.000      0:0.152 1:0.848
+skempi           interaction  300  0.9600  0.9600   1.0000     0.9600  -            -           0.9796  0.0000  0    0   12   288  -      1.0000  1:1.000      0:0.040 1:0.960
+string           interaction  314  0.8885  0.8885   1.0000     0.8885  -            -           0.9410  0.0000  0    0   35   279  -      1.0000  1:1.000      0:0.111 1:0.889
+
+Source-Specific Regression Tasks
+source        task                   n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
+------------  ---------------------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
+ppb_affinity  affinity_ppb_affinity  761  7.3170      2.0450     7.3219     1.0303    1.7415  2.2004  0.0954   0.1038    -0.1577
+skempi        affinity_skempi        281  7.9862      2.3037     6.9642     0.8739    2.0548  2.7000  -0.0434  -0.0755   -0.3736
+
+Source-Normalized Regression Tasks
+task                   n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
+---------------------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
+affinity_ppb_affinity  761  -0.0000     1.0000     0.0024     0.5038    0.8515  1.0760  0.0954   0.1038    -0.1577
+affinity_skempi        281  0.0000      1.0000     -0.4436    0.3793    0.8919  1.1720  -0.0434  -0.0755   -0.3736
+
+Checkpoint Classification Calibration Applied
+task         cal_n  thr     acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn   tp    auroc   auprc   label_ratio      pred_ratio
+-----------  -----  ------  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  ---  ----  ------  ------  ---------------  ---------------
+interaction  1611   0.0900  0.8797  0.8190   0.9567     0.9019  0.7361       0.7361      0.9285  0.5614  159  57  137  1260  0.9515  0.9918  0:0.134 1:0.866  0:0.184 1:0.816
+
+Checkpoint Regression Calibration Applied
+task                   cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
+---------------------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  -------
+affinity_ppb_affinity  748    0.2840  5.1420     7.2215     0.2926    1.5921  2.0403  0.0954   0.1038    0.0047
+affinity_skempi        294    0.7234  1.4996     6.5374     0.6322    2.1280  2.8164  -0.0434  -0.0755   -0.4946
+```
