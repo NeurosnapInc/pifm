@@ -285,13 +285,6 @@ Test:
 - [ ] Bilinear interaction layers
 - [ ] Small Transformer operating on chain embeddings
 
-### Output Heads
-Evaluate:
-- [ ] Binary interaction
-- [ ] pKd regression
-- [ ] Joint multitask training
-- [ ] Uncertainty estimation
-
 ### Data Augmentation
 - [ ] Sequence masking
 - [ ] Residue dropout
