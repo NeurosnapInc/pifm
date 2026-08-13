@@ -687,3 +687,84 @@ task                   cal_n  slope   intercept  pred_mean  pred_std  mae     rm
 affinity_ppb_affinity  748    0.2840  5.1420     7.2215     0.2926    1.5921  2.0403  0.0954   0.1038    0.0047
 affinity_skempi        294    0.7234  1.4996     6.5374     0.6322    2.1280  2.8164  -0.0434  -0.0755   -0.4946
 ```
+
+### Version 2026-08-13
+#### Changes
+- Removed affinity regression from the downstream ML path to create a simpler interaction-only baseline.
+- Kept affinity values in aggregation/source loading where available, but tokenization now emits only the `interaction` task.
+- Simplified training to a single binary interaction head with the existing frozen ProstT5 + adapter architecture.
+- Simplified validation/calibration to classification-only reports: aggregate interaction metrics, source-specific interaction metrics, confusion counts, specificity, MCC, AUROC, AUPRC, and threshold calibration.
+- Removed downstream regression config knobs, regression heads, affinity task construction, source-normalized regression reporting, and post-hoc regression calibration.
+- Renamed cache outputs to avoid accidentally reusing stale multitask caches:
+  - `data/tokenized/interaction_group_pair_prostt5_tokens.pt`
+  - `data/tokenized/interaction_prostt5_backbone_embeddings.pt`
+
+#### Rationale
+- The 2026-08-12 source-specific affinity experiment confirmed that interaction classification is useful, but affinity regression did not generalize on the test split.
+- Removing affinity downstream makes this the clean baseline before testing cheaper architecture ablations such as residue-to-chain and group pooling strategies.
+
+#### Next Run
+```bash
+python tokenize_data.py
+python cache_embeddings.py
+python train.py
+```
+
+#### Results
+- Validation classification remained reasonable after removing downstream affinity: `AUROC=0.8964`, `AUPRC=0.9775`, `balanced_acc=0.8079`, `specificity=0.6852`, and `MCC=0.5843`.
+- Test classification was weaker than the 2026-08-12 multitask/source-specific-affinity run: `AUROC=0.8353`, `AUPRC=0.9575`, `balanced_acc=0.6886`, `specificity=0.4352`, and `MCC=0.4131`.
+- Calibrating the threshold on validation did not recover test negative handling: calibrated test `balanced_acc=0.6826`, `specificity=0.4167`, and `MCC=0.4138`.
+- Main readout: removing affinity simplifies the code and creates the intended clean baseline, but the interaction-only run has worse test negative recall than the previous setup. The next pooling ablations should be compared against this baseline, not assumed to improve it.
+
+#### Validation Split
+```
+Dataset size (validation): 1614 pairs
+Checkpoint: checkpoints/prostt5_group_pair_adapter_best_2026-08-13_seed_1.pt
+Cache: data/tokenized/interaction_group_pair_prostt5_tokens.pt
+
+Classification Tasks
+task         n     acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn  tp    auroc   auprc   label_ratio      pred_ratio
+-----------  ----  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  --  ----  ------  ------  ---------------  ---------------
+interaction  1614  0.8978  0.8079   0.9503     0.9306  0.6852       0.6852      0.9404  0.5843  148  68  97  1301  0.8964  0.9775  0:0.134 1:0.866  0:0.152 1:0.848
+
+Source-Specific Classification Tasks
+source           task         n    acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn  tp   auroc  auprc   label_ratio  pred_ratio
+---------------  -----------  ---  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  --  ---  -----  ------  -----------  ---------------
+intact_positive  interaction  24   0.2500  0.2500   1.0000     0.2500  -            -           0.4000  0.0000  0    0   18  6    -      1.0000  1:1.000      0:0.750 1:0.250
+negatome         interaction  216  0.6852  0.3426   0.0000     0.0000  0.6852       0.6852      0.0000  0.0000  148  68  0   0    -      0.0000  0:1.000      0:0.685 1:0.315
+ppb_affinity     interaction  754  0.9324  0.9324   1.0000     0.9324  -            -           0.9650  0.0000  0    0   51  703  -      1.0000  1:1.000      0:0.068 1:0.932
+skempi           interaction  304  0.9605  0.9605   1.0000     0.9605  -            -           0.9799  0.0000  0    0   12  292  -      1.0000  1:1.000      0:0.039 1:0.961
+string           interaction  316  0.9494  0.9494   1.0000     0.9494  -            -           0.9740  0.0000  0    0   16  300  -      1.0000  1:1.000      0:0.051 1:0.949
+
+Checkpoint Classification Calibration Applied
+task         cal_n  thr     acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn  tp    auroc   auprc   label_ratio      pred_ratio
+-----------  -----  ------  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  --  ----  ------  ------  ---------------  ---------------
+interaction  1614   0.4000  0.9095  0.8088   0.9491     0.9464  0.6713       0.6713      0.9477  0.6129  145  71  75  1323  0.8964  0.9775  0:0.134 1:0.866  0:0.136 1:0.864
+```
+
+#### Test Split
+```
+Dataset size (test): 1615 pairs
+Checkpoint: checkpoints/prostt5_group_pair_adapter_best_2026-08-13_seed_1.pt
+Cache: data/tokenized/interaction_group_pair_prostt5_tokens.pt
+
+Classification Tasks
+task         n     acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn  fp   fn  tp    auroc   auprc   label_ratio      pred_ratio
+-----------  ----  ------  -------  ---------  ------  -----------  ----------  ------  ------  --  ---  --  ----  ------  ------  ---------------  ---------------
+interaction  1615  0.8743  0.6886   0.9153     0.9421  0.4352       0.4352      0.9285  0.4131  94  122  81  1318  0.8353  0.9575  0:0.134 1:0.866  0:0.108 1:0.892
+
+Source-Specific Classification Tasks
+source           task         n    acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn  fp   fn  tp   auroc  auprc   label_ratio  pred_ratio
+---------------  -----------  ---  ------  -------  ---------  ------  -----------  ----------  ------  ------  --  ---  --  ---  -----  ------  -----------  ---------------
+intact_negative  interaction  1    1.0000  0.5000   0.0000     0.0000  1.0000       1.0000      0.0000  0.0000  1   0    0   0    -      0.0000  0:1.000      0:1.000
+intact_positive  interaction  25   0.2800  0.2800   1.0000     0.2800  -            -           0.4375  0.0000  0   0    18  7    -      1.0000  1:1.000      0:0.720 1:0.280
+negatome         interaction  215  0.4326  0.2163   0.0000     0.0000  0.4326       0.4326      0.0000  0.0000  93  122  0   0    -      0.0000  0:1.000      0:0.433 1:0.567
+ppb_affinity     interaction  755  0.9483  0.9483   1.0000     0.9483  -            -           0.9735  0.0000  0   0    39  716  -      1.0000  1:1.000      0:0.052 1:0.948
+skempi           interaction  302  0.9967  0.9967   1.0000     0.9967  -            -           0.9983  0.0000  0   0    1   301  -      1.0000  1:1.000      0:0.003 1:0.997
+string           interaction  317  0.9274  0.9274   1.0000     0.9274  -            -           0.9624  0.0000  0   0    23  294  -      1.0000  1:1.000      0:0.073 1:0.927
+
+Checkpoint Classification Calibration Applied
+task         cal_n  thr     acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn  fp   fn  tp    auroc   auprc   label_ratio      pred_ratio
+-----------  -----  ------  ------  -------  ---------  ------  -----------  ----------  ------  ------  --  ---  --  ----  ------  ------  ---------------  ---------------
+interaction  1614   0.4000  0.8774  0.6826   0.9133     0.9485  0.4167       0.4167      0.9306  0.4138  90  126  72  1327  0.8353  0.9575  0:0.134 1:0.866  0:0.100 1:0.900
+```
