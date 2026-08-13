@@ -255,7 +255,7 @@ This enables:
 ### Residue → Chain Pooling
 - [ ] Mean pooling
 - [ ] Max pooling
-- [ ] Attention pooling
+- [x] Attention pooling
 - [ ] CLS token (if available)
 - [ ] Learned weighted pooling
 
@@ -263,13 +263,13 @@ This enables:
 Evaluate permutation-invariant approaches:
 - [ ] Mean pooling
 - [ ] Max pooling
-- [ ] Attention pooling
+- [x] Attention pooling
 - [ ] DeepSets
 - [ ] Set Transformer
 
 ### Interaction Module
 Test:
-- [ ] Pairwise interaction features
+- [x] Pairwise interaction features
 - [ ] Cross-attention between groups
 - [ ] Bilinear interaction layers
 - [ ] Small Transformer operating on chain embeddings
@@ -277,13 +277,13 @@ Test:
 ### Data Augmentation
 - [ ] Sequence masking
 - [ ] Residue dropout
-- [ ] Homology filtering
+- [x] Homology filtering
 - [ ] Hard negative mining
 
 ### Loss Functions
 - [ ] BCE
 - [ ] Contrastive loss
-- [ ] Focal loss variants
+- [x] Focal loss variants
 
 ## Project Inspiration
 This project builds upon our previous work on **Prot2Prop**, a lightweight framework for multitask protein property prediction using pretrained protein language models.
