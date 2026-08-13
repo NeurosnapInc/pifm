@@ -1,21 +1,18 @@
 """
-Multi-task training script for protein-group pair prediction with a frozen
-ProstT5 backbone and lightweight adapter fine-tuning.
+Train the interaction classifier with a frozen ProstT5 backbone and lightweight heads.
 """
 
-import math
 import random
 import warnings
 from collections import Counter
 from datetime import date
 from pathlib import Path
-from typing import Dict, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, matthews_corrcoef, mean_absolute_error, mean_squared_error, roc_auc_score
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, matthews_corrcoef, roc_auc_score
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import T5EncoderModel, get_linear_schedule_with_warmup
@@ -23,13 +20,11 @@ from transformers import T5EncoderModel, get_linear_schedule_with_warmup
 from calibration import fit_posthoc_calibration
 from config import (
   ADAPTER_DIM,
-  AFFINITY_NORMALIZATION,
-  AFFINITY_SOURCE_TASKS,
-  AFFINITY_TASK_MODE,
   BACKBONE_EMBEDDING_CACHE_PATH,
   BATCH_SAMPLER_SEED,
   BATCH_SIZE,
   CLASSIFICATION_HEAD_HIDDEN,
+  CLASSIFICATION_SELECTION_METRIC,
   DROPOUT,
   EPOCHS,
   EVAL_MAX_TOKENS_PER_BATCH,
@@ -37,16 +32,9 @@ from config import (
   INTERACTION_LOSS,
   INTERACTION_POS_NEG_RATIO,
   LR,
-  CLASSIFICATION_SELECTION_METRIC,
   MIN_CLASSIFICATION_VAL_LABELS,
-  MIN_REGRESSION_VAL_LABELS,
-  MIN_SOURCE_AFFINITY_LABELS,
   MODEL_NAME,
   PATIENCE,
-  REGRESSION_HUBER_DELTA,
-  REGRESSION_LOSS,
-  REGRESSION_SELECTION_METRIC,
-  REGRESSION_HEAD_HIDDEN,
   SOURCE_BALANCED_SAMPLING,
   TRAIN_CACHE_PATH,
   TRAIN_MAX_TOKENS_PER_BATCH,
@@ -70,6 +58,7 @@ AMP_ENABLED = DEVICE.type == "cuda"
 COMPILE_MODEL = DEVICE.type == "cuda"
 PIN_MEMORY = DEVICE.type == "cuda"
 USE_FUSED_ADAMW = DEVICE.type == "cuda"
+TASK_NAME = "interaction"
 
 
 class FocalCrossEntropyLoss(nn.Module):
@@ -97,36 +86,19 @@ def _build_classification_loss(labels: torch.Tensor, mask: torch.Tensor):
   counts = Counter(int(x) for x in observed.tolist())
   n0, n1 = counts.get(0, 0), counts.get(1, 0)
   total = n0 + n1
-  w0 = total / (2.0 * max(1, n0))
-  w1 = total / (2.0 * max(1, n1))
-  weights = torch.tensor([w0, w1], dtype=torch.float, device=DEVICE)
+  weights = torch.tensor(
+    [
+      total / (2.0 * max(1, n0)),
+      total / (2.0 * max(1, n1)),
+    ],
+    dtype=torch.float,
+    device=DEVICE,
+  )
   if INTERACTION_LOSS == "ce":
     return nn.CrossEntropyLoss(weight=weights)
   if INTERACTION_LOSS == "focal":
     return FocalCrossEntropyLoss(weight=weights, gamma=FOCAL_GAMMA)
   raise ValueError(f"Unsupported INTERACTION_LOSS={INTERACTION_LOSS!r}")
-
-
-def _metric_from_preds(labels, preds, dtype: str) -> Tuple[str, float, Dict[str, float]]:
-  if dtype == "bool":
-    acc = accuracy_score(labels, preds)
-    bal_acc = balanced_accuracy_score(labels, preds)
-    f1 = f1_score(labels, preds, zero_division=0)
-    tn = sum(1 for label, pred in zip(labels, preds) if label == 0 and pred == 0)
-    fp = sum(1 for label, pred in zip(labels, preds) if label == 0 and pred == 1)
-    specificity = tn / (tn + fp) if (tn + fp) else None
-    return "f1", f1, {
-      "acc": acc,
-      "balanced_accuracy": bal_acc,
-      "specificity": specificity,
-      "negative_recall": specificity,
-      "mcc": matthews_corrcoef(labels, preds),
-      "f1": f1,
-    }
-
-  mae = mean_absolute_error(labels, preds)
-  rmse = math.sqrt(mean_squared_error(labels, preds))
-  return "mae", mae, {"mae": mae, "rmse": rmse}
 
 
 def _safe_auroc(labels, scores):
@@ -135,217 +107,149 @@ def _safe_auroc(labels, scores):
   return roc_auc_score(labels, scores)
 
 
-def _pearson_corr(labels, preds):
-  if len(labels) < 2:
-    return None
+def _classification_report(labels, preds, scores):
+  tn = sum(1 for label, pred in zip(labels, preds) if label == 0 and pred == 0)
+  fp = sum(1 for label, pred in zip(labels, preds) if label == 0 and pred == 1)
+  fn = sum(1 for label, pred in zip(labels, preds) if label == 1 and pred == 0)
+  tp = sum(1 for label, pred in zip(labels, preds) if label == 1 and pred == 1)
+  specificity = tn / (tn + fp) if (tn + fp) else None
+  return {
+    "acc": accuracy_score(labels, preds),
+    "balanced_accuracy": balanced_accuracy_score(labels, preds),
+    "specificity": specificity,
+    "negative_recall": specificity,
+    "mcc": matthews_corrcoef(labels, preds) if len(set(labels)) >= 2 and len(set(preds)) >= 2 else 0.0,
+    "f1": f1_score(labels, preds, zero_division=0),
+    "auroc": _safe_auroc(labels, scores),
+    "tn": tn,
+    "fp": fp,
+    "fn": fn,
+    "tp": tp,
+  }
 
-  label_arr = np.asarray(labels, dtype=np.float64)
-  pred_arr = np.asarray(preds, dtype=np.float64)
-  label_std = label_arr.std()
-  pred_std = pred_arr.std()
-  if label_std == 0.0 or pred_std == 0.0:
-    return None
-  return float(np.corrcoef(label_arr, pred_arr)[0, 1])
 
-
-def _select_validation_metric(task_name, values, report, dtype: str):
-  """Return the early-stopping score for a task, or None if validation is underpowered."""
+def _select_validation_metric(values, report):
   n_labels = len(values["labels"])
+  if n_labels < MIN_CLASSIFICATION_VAL_LABELS:
+    return None, f"classification labels {n_labels} < {MIN_CLASSIFICATION_VAL_LABELS}"
 
-  if dtype == "bool":
-    auroc = _safe_auroc(values["labels"], values["scores"])
-    report["auroc"] = auroc
-
-    if n_labels < MIN_CLASSIFICATION_VAL_LABELS:
-      return None, f"classification labels {n_labels} < {MIN_CLASSIFICATION_VAL_LABELS}"
-
-    if CLASSIFICATION_SELECTION_METRIC == "auroc":
-      if auroc is None:
-        return None, "AUROC undefined because validation has one class"
-      return auroc, "auroc"
-    if CLASSIFICATION_SELECTION_METRIC == "balanced_accuracy":
-      return report["balanced_accuracy"], "balanced_accuracy"
-    raise ValueError(f"Unsupported CLASSIFICATION_SELECTION_METRIC={CLASSIFICATION_SELECTION_METRIC!r}")
-
-  if n_labels < MIN_REGRESSION_VAL_LABELS:
-    return None, f"regression labels {n_labels} < {MIN_REGRESSION_VAL_LABELS}"
-
-  normalized_mae = mean_absolute_error(values["normalized_labels"], values["normalized_preds"])
-  pearson = _pearson_corr(values["labels"], values["preds"])
-  report["normalized_mae"] = normalized_mae
-  report["pearson"] = pearson
-  if REGRESSION_SELECTION_METRIC == "normalized_mae":
-    return -normalized_mae, "negative_normalized_mae"
-  if REGRESSION_SELECTION_METRIC == "pearson":
-    if pearson is None:
-      return None, "Pearson undefined because validation labels/predictions have zero variance"
-    return pearson, "pearson"
-  raise ValueError(f"Unsupported REGRESSION_SELECTION_METRIC={REGRESSION_SELECTION_METRIC!r}")
+  if CLASSIFICATION_SELECTION_METRIC == "auroc":
+    if report["auroc"] is None:
+      return None, "AUROC undefined because validation has one class"
+    return report["auroc"], "auroc"
+  if CLASSIFICATION_SELECTION_METRIC == "balanced_accuracy":
+    return report["balanced_accuracy"], "balanced_accuracy"
+  raise ValueError(f"Unsupported CLASSIFICATION_SELECTION_METRIC={CLASSIFICATION_SELECTION_METRIC!r}")
 
 
 def _compute_sample_weights(split_payload, task_order):
-  label_mask = split_payload["label_mask"]
-  task_counts = label_mask.sum(dim=0).float()
-  inv_task_counts = torch.zeros_like(task_counts)
-  nonzero = task_counts > 0
-  inv_task_counts[nonzero] = 1.0 / task_counts[nonzero]
   task_to_idx = {task_name: idx for idx, task_name in enumerate(task_order)}
+  interaction_idx = task_to_idx[TASK_NAME]
+  label_mask = split_payload["label_mask"]
+  labels = split_payload["raw_labels"][:, interaction_idx]
+  mask = label_mask[:, interaction_idx]
   sources = split_payload.get("sources", ["unknown"] * len(label_mask))
   source_counts = Counter(sources)
   n_sources = max(1, len(source_counts))
-  interaction_idx = task_to_idx.get("interaction")
-  interaction_labels = split_payload["raw_labels"][:, interaction_idx] if interaction_idx is not None else None
-  interaction_mask = label_mask[:, interaction_idx] if interaction_idx is not None else None
 
-  interaction_class_weights = {}
-  if interaction_idx is not None:
-    n_pos = int(((interaction_labels > 0.5) & interaction_mask).sum().item())
-    n_neg = int(((interaction_labels <= 0.5) & interaction_mask).sum().item())
-    if n_pos > 0 and n_neg > 0:
-      # Cap expected sampled positives so negatives are seen often enough each epoch.
-      pos_mass = INTERACTION_POS_NEG_RATIO / (INTERACTION_POS_NEG_RATIO + 1.0)
-      neg_mass = 1.0 / (INTERACTION_POS_NEG_RATIO + 1.0)
-      interaction_class_weights = {
-        1: pos_mass / n_pos,
-        0: neg_mass / n_neg,
-      }
+  n_pos = int(((labels > 0.5) & mask).sum().item())
+  n_neg = int(((labels <= 0.5) & mask).sum().item())
+  class_weights = {}
+  if n_pos > 0 and n_neg > 0:
+    # Cap expected sampled positives so negatives are seen often enough each epoch.
+    pos_mass = INTERACTION_POS_NEG_RATIO / (INTERACTION_POS_NEG_RATIO + 1.0)
+    neg_mass = 1.0 / (INTERACTION_POS_NEG_RATIO + 1.0)
+    class_weights = {
+      1: pos_mass / n_pos,
+      0: neg_mass / n_neg,
+    }
 
   sample_weights = []
-  for sample_idx, row_mask in enumerate(label_mask):
-    present = row_mask.nonzero(as_tuple=False).view(-1)
-    if present.numel() == 0:
+  for sample_idx in range(len(label_mask)):
+    if not bool(mask[sample_idx]):
       sample_weights.append(1.0)
       continue
 
-    weight = float(inv_task_counts[present].mean().item())
-    if interaction_idx is not None and bool(row_mask[interaction_idx]) and interaction_class_weights:
-      label = 1 if float(interaction_labels[sample_idx].item()) > 0.5 else 0
-      weight *= interaction_class_weights[label]
+    label = 1 if float(labels[sample_idx].item()) > 0.5 else 0
+    weight = class_weights.get(label, 1.0)
     if SOURCE_BALANCED_SAMPLING:
       weight *= len(label_mask) / (n_sources * source_counts[sources[sample_idx]])
     sample_weights.append(weight)
 
   weights = torch.tensor(sample_weights, dtype=torch.double)
   weights /= weights.sum()
-
-  task_label_counts = {task_name: int(task_counts[idx].item()) for idx, task_name in enumerate(task_order)}
-  return weights, task_label_counts
+  return weights, {TASK_NAME: int(mask.sum().item())}
 
 
-def _is_affinity_task(task_name, task_meta):
-  return task_name == "affinity" or task_meta.get("base_task") == "affinity"
+def _load_embedding_cache():
+  if USE_BACKBONE_EMBEDDING_CACHE and BACKBONE_EMBEDDING_CACHE_PATH.exists():
+    embedding_cache, payload = load_backbone_embedding_cache(
+      BACKBONE_EMBEDDING_CACHE_PATH,
+      expected_model_name=MODEL_NAME,
+      expected_tokenized_cache_path=TRAIN_CACHE_PATH,
+    )
+    print(
+      f"Using frozen backbone embedding cache from {BACKBONE_EMBEDDING_CACHE_PATH} "
+      f"sequences={payload.get('num_sequences', len(embedding_cache))}"
+    )
+    return embedding_cache
+
+  if USE_BACKBONE_EMBEDDING_CACHE:
+    print(
+      f"Backbone embedding cache not found at {BACKBONE_EMBEDDING_CACHE_PATH}; "
+      "falling back to on-the-fly ProstT5 encoding."
+    )
+  return None
 
 
-def _compute_source_regression_stats(split_payload, task_order, task_metas, global_means, global_stds):
-  source_stats = {}
-  sources = split_payload.get("sources")
-  if AFFINITY_NORMALIZATION != "source" or sources is None:
-    return source_stats
+def _forward_model(model, batch):
+  input_ids, input_embeddings, attn_mask, chain_to_sample, chain_to_group, raw_labels, normalized_labels, label_mask, sources = batch
+  if input_ids is not None:
+    input_ids = input_ids.to(DEVICE, non_blocking=PIN_MEMORY)
+  if input_embeddings is not None:
+    input_embeddings = input_embeddings.to(DEVICE, non_blocking=PIN_MEMORY)
+  attn_mask = attn_mask.to(DEVICE, non_blocking=PIN_MEMORY)
+  chain_to_sample = chain_to_sample.to(DEVICE, non_blocking=PIN_MEMORY)
+  chain_to_group = chain_to_group.to(DEVICE, non_blocking=PIN_MEMORY)
+  raw_labels = raw_labels.to(DEVICE, non_blocking=PIN_MEMORY)
+  label_mask = label_mask.to(DEVICE, non_blocking=PIN_MEMORY)
 
-  label_mask = split_payload["label_mask"]
-  raw_labels = split_payload["raw_labels"]
-  for task_idx, task_name in enumerate(task_order):
-    if not _is_affinity_task(task_name, task_metas[task_name]):
-      continue
-
-    values_by_source = {}
-    for sample_idx, source in enumerate(sources):
-      if not label_mask[sample_idx, task_idx]:
-        continue
-      values_by_source.setdefault(source, []).append(float(raw_labels[sample_idx, task_idx].item()))
-
-    task_stats = {}
-    for source, values in values_by_source.items():
-      if len(values) < MIN_SOURCE_AFFINITY_LABELS:
-        continue
-      tensor = torch.tensor(values, dtype=torch.float)
-      std = tensor.std(unbiased=False)
-      task_stats[source] = {
-        "mean": float(tensor.mean().item()),
-        "std": float(std.item() if std.item() > 0 else 1.0),
-        "n": len(values),
-      }
-
-    task_stats["__global__"] = {
-      "mean": float(global_means[task_idx].item()),
-      "std": float(global_stds[task_idx].item()),
-      "n": int(label_mask[:, task_idx].sum().item()),
-    }
-    source_stats[task_name] = task_stats
-
-  return source_stats
-
-
-def _source_norm_tensors(task_name, sources, source_regression_stats, device):
-  task_stats = source_regression_stats.get(task_name, {})
-  fallback = task_stats.get("__global__", {"mean": 0.0, "std": 1.0})
-  means = []
-  stds = []
-  for source in sources:
-    stats = task_stats.get(source, fallback)
-    means.append(stats["mean"])
-    stds.append(stats["std"])
-  return (
-    torch.tensor(means, dtype=torch.float, device=device),
-    torch.tensor(stds, dtype=torch.float, device=device),
+  outputs = model(
+    input_ids,
+    attn_mask,
+    chain_to_sample,
+    chain_to_group,
+    raw_labels.shape[0],
+    precomputed_embeddings=input_embeddings,
   )
+  return outputs, raw_labels, label_mask
 
 
-def _normalize_regression_targets(task_name, raw_values, source_values, source_regression_stats):
-  means, stds = _source_norm_tensors(task_name, source_values, source_regression_stats, raw_values.device)
-  return (raw_values - means) / stds
+def _collect_predictions(model, loader, task_idx):
+  predictions = {"labels": [], "preds": [], "scores": []}
+
+  with torch.no_grad():
+    for batch in loader:
+      with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=AMP_ENABLED):
+        outputs, raw_labels, label_mask = _forward_model(model, batch)
+
+      mask = label_mask[:, task_idx]
+      if not mask.any():
+        continue
+      logits = outputs[TASK_NAME][mask].float()
+      probs = torch.softmax(logits, dim=1)
+      preds = probs.argmax(dim=1)
+      labels = raw_labels[mask, task_idx].long()
+      predictions["preds"].extend(preds.cpu().tolist())
+      predictions["labels"].extend(labels.cpu().tolist())
+      predictions["scores"].extend(probs[:, 1].cpu().tolist())
+
+  return predictions
 
 
-def _denormalize_regression_preds(task_name, normalized_preds, source_values, source_regression_stats):
-  means, stds = _source_norm_tensors(task_name, source_values, source_regression_stats, normalized_preds.device)
-  return normalized_preds * stds + means
-
-
-def _regression_loss(preds, targets):
-  if REGRESSION_LOSS == "mse":
-    return F.mse_loss(preds, targets)
-  if REGRESSION_LOSS == "huber":
-    return F.huber_loss(preds, targets, delta=REGRESSION_HUBER_DELTA)
-  raise ValueError(f"Unsupported REGRESSION_LOSS={REGRESSION_LOSS!r}")
-
-
-def _compute_multitask_loss(outputs, raw_labels, normalized_labels, label_mask, sources, task_order, task_metas, criteria, source_regression_stats):
-  task_losses = []
-
-  for task_idx, task_name in enumerate(task_order):
-    mask = label_mask[:, task_idx]
-    if not mask.any():
-      continue
-
-    preds = outputs[task_name][mask]
-    meta = task_metas[task_name]
-    if meta["dtype"] == "float":
-      if task_name in source_regression_stats:
-        masked_sources = [source for source, keep in zip(sources, mask.detach().cpu().tolist()) if keep]
-        targets = _normalize_regression_targets(
-          task_name,
-          raw_labels[mask, task_idx],
-          masked_sources,
-          source_regression_stats,
-        )
-      else:
-        targets = normalized_labels[mask, task_idx]
-      task_loss = _regression_loss(preds.squeeze(-1), targets)
-    else:
-      targets = raw_labels[mask, task_idx].long()
-      task_loss = criteria[task_name](preds, targets)
-    task_losses.append(task_loss)
-
-  if not task_losses:
-    raise ValueError("Encountered a batch with no observed task labels.")
-
-  return torch.stack(task_losses).mean()
-
-
-# Suppress a repetitive torch.compile/inductor warning that spams tqdm output during training.
 warnings.filterwarnings("ignore", message="Online softmax is disabled.*", category=UserWarning)
 
-print("Loading multitask tokenized cache")
+print("Loading interaction tokenized cache")
 if not TRAIN_CACHE_PATH.exists():
   raise FileNotFoundError(f"Missing tokenized cache at {TRAIN_CACHE_PATH}. Run tokenize_data.py first.")
 
@@ -353,51 +257,25 @@ _set_training_seed(TRAINING_SEED)
 payload = torch.load(TRAIN_CACHE_PATH, map_location="cpu")
 task_order = payload["task_order"]
 task_metas = payload["task_metas"]
+if task_order != [TASK_NAME]:
+  raise ValueError(f"Expected interaction-only cache, found task_order={task_order!r}. Re-run tokenize_data.py.")
+
 train_split = payload["splits"]["train"]
 val_split = payload["splits"]["validation"]
 pad_token_id = payload["config"]["pad_token_id"]
-normalization = payload["normalization"]
-regression_means = normalization["train_mean"]
-regression_stds = normalization["train_std"]
-source_regression_stats = _compute_source_regression_stats(
-  train_split,
-  task_order,
-  task_metas,
-  regression_means,
-  regression_stds,
-)
+task_idx = task_order.index(TASK_NAME)
 
-embedding_cache = None
-embedding_cache_payload = None
-if USE_BACKBONE_EMBEDDING_CACHE and BACKBONE_EMBEDDING_CACHE_PATH.exists():
-  embedding_cache, embedding_cache_payload = load_backbone_embedding_cache(
-    BACKBONE_EMBEDDING_CACHE_PATH,
-    expected_model_name=MODEL_NAME,
-  )
-  print(
-    f"Using frozen backbone embedding cache from {BACKBONE_EMBEDDING_CACHE_PATH} "
-    f"sequences={embedding_cache_payload.get('num_sequences', len(embedding_cache))}"
-  )
-elif USE_BACKBONE_EMBEDDING_CACHE:
-  print(
-    f"Backbone embedding cache not found at {BACKBONE_EMBEDDING_CACHE_PATH}; "
-    "falling back to on-the-fly ProstT5 encoding."
-  )
-
+embedding_cache = _load_embedding_cache()
 train_ds = MultiTaskGroupPairDataset(train_split, embedding_cache=embedding_cache)
 val_ds = MultiTaskGroupPairDataset(val_split, embedding_cache=embedding_cache)
 train_sample_weights, train_label_counts = _compute_sample_weights(train_split, task_order)
 
 print(f"Loaded cache from {TRAIN_CACHE_PATH}")
 print(f"Pairs: train={len(train_ds)} val={len(val_ds)}")
-for task_idx, task_name in enumerate(task_order):
-  meta = task_metas[task_name]
-  train_count = train_label_counts[task_name]
-  val_count = int(val_split["label_mask"][:, task_idx].sum().item())
-  stats_msg = ""
-  if meta["dtype"] == "float":
-    stats_msg = f" mean={regression_means[task_idx].item():.4f} std={regression_stds[task_idx].item():.4f}"
-  print(f"Task={task_name} dtype={meta['dtype']} labels(train/val)={train_count}/{val_count}{stats_msg}")
+print(
+  f"Task=interaction dtype=bool labels(train/val)="
+  f"{train_label_counts[TASK_NAME]}/{int(val_split['label_mask'][:, task_idx].sum().item())}"
+)
 
 if embedding_cache is None:
   base_model = T5EncoderModel.from_pretrained(MODEL_NAME).to(DEVICE)
@@ -406,8 +284,7 @@ if embedding_cache is None:
   embed_dim = base_model.config.d_model
 else:
   base_model = None
-  first_embedding = next(iter(embedding_cache.values()))
-  embed_dim = first_embedding.shape[-1]
+  embed_dim = next(iter(embedding_cache.values())).shape[-1]
 
 train_loader = DataLoader(
   train_ds,
@@ -436,15 +313,12 @@ val_loader = DataLoader(
 )
 
 print("Initializing model")
-task_output_dims = {}
-criteria = {}
-for task_idx, task_name in enumerate(task_order):
-  meta = task_metas[task_name]
-  train_mask = train_split["label_mask"][:, task_idx]
-  train_labels = train_split["raw_labels"][:, task_idx]
-  task_output_dims[task_name] = output_dim_from_meta(meta, train_labels, train_mask)
-  if meta["dtype"] == "bool":
-    criteria[task_name] = _build_classification_loss(train_labels, train_mask)
+train_mask = train_split["label_mask"][:, task_idx]
+train_labels = train_split["raw_labels"][:, task_idx]
+task_output_dims = {
+  TASK_NAME: output_dim_from_meta(task_metas[TASK_NAME], train_labels, train_mask),
+}
+criterion = _build_classification_loss(train_labels, train_mask)
 
 model = MultiTaskGroupPairModel(
   base_model,
@@ -455,7 +329,6 @@ model = MultiTaskGroupPairModel(
   adapter_dim=ADAPTER_DIM,
   dropout=DROPOUT,
   classification_head_hidden=CLASSIFICATION_HEAD_HIDDEN,
-  regression_head_hidden=REGRESSION_HEAD_HIDDEN,
 ).to(DEVICE)
 
 if COMPILE_MODEL and hasattr(torch, "compile"):
@@ -494,48 +367,17 @@ best_metric = -float("inf")
 stale = 0
 best_state = None
 
-regression_means_device = regression_means.to(DEVICE)
-regression_stds_device = regression_stds.to(DEVICE)
-
 for epoch in range(EPOCHS):
   model.train()
   total_loss = 0.0
 
-  for input_ids, input_embeddings, attn_mask, chain_to_sample, chain_to_group, raw_labels, normalized_labels, label_mask, sources in tqdm(
-    train_loader,
-    desc=f"Epoch {epoch + 1}/{EPOCHS}",
-  ):
-    if input_ids is not None:
-      input_ids = input_ids.to(DEVICE, non_blocking=PIN_MEMORY)
-    if input_embeddings is not None:
-      input_embeddings = input_embeddings.to(DEVICE, non_blocking=PIN_MEMORY)
-    attn_mask = attn_mask.to(DEVICE, non_blocking=PIN_MEMORY)
-    chain_to_sample = chain_to_sample.to(DEVICE, non_blocking=PIN_MEMORY)
-    chain_to_group = chain_to_group.to(DEVICE, non_blocking=PIN_MEMORY)
-    raw_labels = raw_labels.to(DEVICE, non_blocking=PIN_MEMORY)
-    normalized_labels = normalized_labels.to(DEVICE, non_blocking=PIN_MEMORY)
-    label_mask = label_mask.to(DEVICE, non_blocking=PIN_MEMORY)
-
+  for batch in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{EPOCHS}"):
     with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=AMP_ENABLED):
-      outputs = model(
-        input_ids,
-        attn_mask,
-        chain_to_sample,
-        chain_to_group,
-        raw_labels.shape[0],
-        precomputed_embeddings=input_embeddings,
-      )
-      loss = _compute_multitask_loss(
-        outputs,
-        raw_labels,
-        normalized_labels,
-        label_mask,
-        sources,
-        task_order,
-        task_metas,
-        criteria,
-        source_regression_stats,
-      )
+      outputs, raw_labels, label_mask = _forward_model(model, batch)
+      mask = label_mask[:, task_idx]
+      logits = outputs[TASK_NAME][mask]
+      targets = raw_labels[mask, task_idx].long()
+      loss = criterion(logits, targets)
 
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
@@ -545,148 +387,27 @@ for epoch in range(EPOCHS):
     total_loss += loss.item()
 
   model.eval()
-  val_predictions = {
-    task_name: {
-      "preds": [],
-      "labels": [],
-      "scores": [],
-      "normalized_preds": [],
-      "normalized_labels": [],
-    }
-    for task_name in task_order
-  }
+  val_predictions = {TASK_NAME: _collect_predictions(model, val_loader, task_idx)}
+  report = _classification_report(
+    val_predictions[TASK_NAME]["labels"],
+    val_predictions[TASK_NAME]["preds"],
+    val_predictions[TASK_NAME]["scores"],
+  )
+  selection_metric, selection_metric_name = _select_validation_metric(val_predictions[TASK_NAME], report)
+  if selection_metric is None:
+    raise ValueError(f"No validation task has enough labels for checkpoint selection: {selection_metric_name}")
 
-  with torch.no_grad():
-    for input_ids, input_embeddings, attn_mask, chain_to_sample, chain_to_group, raw_labels, normalized_labels, label_mask, sources in val_loader:
-      if input_ids is not None:
-        input_ids = input_ids.to(DEVICE, non_blocking=PIN_MEMORY)
-      if input_embeddings is not None:
-        input_embeddings = input_embeddings.to(DEVICE, non_blocking=PIN_MEMORY)
-      attn_mask = attn_mask.to(DEVICE, non_blocking=PIN_MEMORY)
-      chain_to_sample = chain_to_sample.to(DEVICE, non_blocking=PIN_MEMORY)
-      chain_to_group = chain_to_group.to(DEVICE, non_blocking=PIN_MEMORY)
-      raw_labels = raw_labels.to(DEVICE, non_blocking=PIN_MEMORY)
-      normalized_labels = normalized_labels.to(DEVICE, non_blocking=PIN_MEMORY)
-      label_mask = label_mask.to(DEVICE, non_blocking=PIN_MEMORY)
-
-      with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=AMP_ENABLED):
-        outputs = model(
-          input_ids,
-          attn_mask,
-          chain_to_sample,
-          chain_to_group,
-          raw_labels.shape[0],
-          precomputed_embeddings=input_embeddings,
-        )
-
-      for task_idx, task_name in enumerate(task_order):
-        mask = label_mask[:, task_idx]
-        if not mask.any():
-          continue
-
-        meta = task_metas[task_name]
-        if meta["dtype"] == "float":
-          preds_norm = outputs[task_name][mask].squeeze(-1).float()
-          masked_sources = [source for source, keep in zip(sources, mask.detach().cpu().tolist()) if keep]
-          if task_name in source_regression_stats:
-            labels_norm = _normalize_regression_targets(
-              task_name,
-              raw_labels[mask, task_idx].float(),
-              masked_sources,
-              source_regression_stats,
-            )
-            preds = _denormalize_regression_preds(task_name, preds_norm, masked_sources, source_regression_stats)
-          else:
-            labels_norm = normalized_labels[mask, task_idx].float()
-            preds = preds_norm * regression_stds_device[task_idx] + regression_means_device[task_idx]
-          labels = raw_labels[mask, task_idx].float()
-          val_predictions[task_name]["preds"].extend(preds.cpu().tolist())
-          val_predictions[task_name]["labels"].extend(labels.cpu().tolist())
-          val_predictions[task_name]["normalized_preds"].extend(preds_norm.cpu().tolist())
-          val_predictions[task_name]["normalized_labels"].extend(labels_norm.cpu().tolist())
-        else:
-          logits = outputs[task_name][mask].float()
-          probs = torch.softmax(logits, dim=1)
-          preds = probs.argmax(dim=1)
-          labels = raw_labels[mask, task_idx].long()
-          val_predictions[task_name]["preds"].extend(preds.cpu().tolist())
-          val_predictions[task_name]["labels"].extend(labels.cpu().tolist())
-          val_predictions[task_name]["scores"].extend(probs[:, 1].cpu().tolist())
-
-  task_reports = {}
-  aggregate_score = 0.0
-  scored_tasks = 0
-  skipped_selection_tasks = {}
-  for task_name, values in val_predictions.items():
-    if not values["labels"]:
-      continue
-
-    metric_name, metric_value, report = _metric_from_preds(values["labels"], values["preds"], task_metas[task_name]["dtype"])
-    selection_metric, selection_metric_name = _select_validation_metric(
-      task_name,
-      values,
-      report,
-      task_metas[task_name]["dtype"],
-    )
-
-    task_reports[task_name] = {
-      "metric_name": metric_name,
-      "metric_value": metric_value,
-      "selection_metric": selection_metric,
-      "selection_metric_name": selection_metric_name,
-      "report": report,
-    }
-    if selection_metric is None:
-      skipped_selection_tasks[task_name] = selection_metric_name
-      continue
-
-    aggregate_score += selection_metric
-    scored_tasks += 1
-
-  # Underpowered validation tasks are still reported, but must not drive early stopping.
-  if scored_tasks == 0:
-    skipped_msg = ", ".join(f"{task} ({reason})" for task, reason in skipped_selection_tasks.items())
-    raise ValueError(f"No validation task has enough labels for checkpoint selection. Skipped: {skipped_msg}")
-
-  aggregate_score /= scored_tasks
-  summary_parts = []
-  for task_name in sorted(task_reports):
-    report = task_reports[task_name]["report"]
-    if task_metas[task_name]["dtype"] == "bool":
-      auroc = report.get("auroc")
-      auroc_msg = "nan" if auroc is None else f"{auroc:.4f}"
-      specificity = report["specificity"]
-      specificity_msg = "nan" if specificity is None else f"{specificity:.4f}"
-      summary_parts.append(
-        f"{task_name}:ACC={report['acc']:.4f} BAL_ACC={report['balanced_accuracy']:.4f} "
-        f"SPEC={specificity_msg} MCC={report['mcc']:.4f} "
-        f"F1={report['f1']:.4f} AUROC={auroc_msg}"
-      )
-    else:
-      pearson = report.get("pearson")
-      pearson_msg = "nan" if pearson is None else f"{pearson:.4f}"
-      summary_parts.append(
-        f"{task_name}:MAE={report['mae']:.4f} RMSE={report['rmse']:.4f} "
-        f"PEARSON={pearson_msg}"
-      )
-
-  selection_parts = [
-    f"{task}={details['selection_metric_name']}:{details['selection_metric']:.4f}"
-    for task, details in sorted(task_reports.items())
-    if details["selection_metric"] is not None
-  ]
-  if skipped_selection_tasks:
-    skipped_msg = "; ".join(f"{task}:{reason}" for task, reason in sorted(skipped_selection_tasks.items()))
-    selection_parts.append(f"skipped={skipped_msg}")
+  auroc_msg = "nan" if report["auroc"] is None else f"{report['auroc']:.4f}"
+  specificity_msg = "nan" if report["specificity"] is None else f"{report['specificity']:.4f}"
   print(
     f"Train Loss: {total_loss / len(train_loader):.4f} | Val "
-    + " ".join(summary_parts)
-    + f" | Select aggregate={aggregate_score:.4f} "
-    + " ".join(selection_parts)
+    f"interaction:ACC={report['acc']:.4f} BAL_ACC={report['balanced_accuracy']:.4f} "
+    f"SPEC={specificity_msg} MCC={report['mcc']:.4f} F1={report['f1']:.4f} AUROC={auroc_msg} "
+    f"| Select {selection_metric_name}={selection_metric:.4f}"
   )
 
-  if aggregate_score > best_metric:
-    best_metric = aggregate_score
+  if selection_metric > best_metric:
+    best_metric = selection_metric
     stale = 0
     model_ref = unwrap_model(model)
     best_state = {
@@ -695,8 +416,8 @@ for epoch in range(EPOCHS):
       "group_pool": {k: v.cpu() for k, v in model_ref.group_pool.state_dict().items()},
       "pair_mlp": {k: v.cpu() for k, v in model_ref.pair_mlp.state_dict().items()},
       "heads": {task_name: {k: v.cpu() for k, v in head.state_dict().items()} for task_name, head in model_ref.heads.items()},
-      "aggregate_score": aggregate_score,
-      "task_reports": task_reports,
+      "selection_metric": selection_metric,
+      "task_report": report,
       "validation_predictions": val_predictions,
     }
   else:
@@ -733,21 +454,11 @@ torch.save(
       "adapter_dim": ADAPTER_DIM,
       "dropout": DROPOUT,
       "classification_head_hidden": CLASSIFICATION_HEAD_HIDDEN,
-      "regression_head_hidden": REGRESSION_HEAD_HIDDEN,
       "model_name": MODEL_NAME,
       "tokenized_data_path": str(TRAIN_CACHE_PATH),
       "task_names": task_order,
       "task_metas": task_metas,
       "task_output_dims": task_output_dims,
-      "regression_mean": regression_means,
-      "regression_std": regression_stds,
-      "regression_loss": REGRESSION_LOSS,
-      "regression_huber_delta": REGRESSION_HUBER_DELTA,
-      "affinity_task_mode": AFFINITY_TASK_MODE,
-      "affinity_source_tasks": list(AFFINITY_SOURCE_TASKS),
-      "affinity_normalization": AFFINITY_NORMALIZATION,
-      "min_source_affinity_labels": MIN_SOURCE_AFFINITY_LABELS,
-      "source_regression_stats": source_regression_stats,
       "interaction_loss": INTERACTION_LOSS,
       "focal_gamma": FOCAL_GAMMA,
       "interaction_pos_neg_ratio": INTERACTION_POS_NEG_RATIO,
@@ -757,14 +468,12 @@ torch.save(
       "calibration": calibration,
       "training_seed": TRAINING_SEED,
       "run_date": run_date,
-      "best_aggregate_score": best_state["aggregate_score"] if best_state else None,
-      "best_task_reports": best_state["task_reports"] if best_state else None,
+      "best_selection_metric": best_state["selection_metric"] if best_state else None,
+      "best_task_report": best_state["task_report"] if best_state else None,
       "classification_selection_metric": CLASSIFICATION_SELECTION_METRIC,
-      "regression_selection_metric": REGRESSION_SELECTION_METRIC,
       "min_classification_val_labels": MIN_CLASSIFICATION_VAL_LABELS,
-      "min_regression_val_labels": MIN_REGRESSION_VAL_LABELS,
     },
   },
   out_path,
 )
-print(f"Saved best adapter+heads -> {out_path}")
+print(f"Saved best adapter+head -> {out_path}")

@@ -27,8 +27,8 @@ SEQUENCE_CLUSTER_WORK_DIR = Path("data/tokenized/mmseqs_tmp")
 ### Tokenization
 MAX_LENGTH = 1024 * 2
 TOKENIZED_DATA_DIR = Path("data/tokenized")
-TRAIN_CACHE_PATH = TOKENIZED_DATA_DIR / "multitask_group_pair_prostt5_tokens.pt"
-BACKBONE_EMBEDDING_CACHE_PATH = TOKENIZED_DATA_DIR / "prostt5_backbone_embeddings.pt"
+TRAIN_CACHE_PATH = TOKENIZED_DATA_DIR / "interaction_group_pair_prostt5_tokens.pt"
+BACKBONE_EMBEDDING_CACHE_PATH = TOKENIZED_DATA_DIR / "interaction_prostt5_backbone_embeddings.pt"
 USE_BACKBONE_EMBEDDING_CACHE = True
 EMBEDDING_CACHE_MAX_TOKENS_PER_BATCH = 32768
 
@@ -44,17 +44,7 @@ BATCH_SAMPLER_SEED = GLOBAL_SEED
 
 ### Early Stopping / Checkpoint Selection
 MIN_CLASSIFICATION_VAL_LABELS = 100
-MIN_REGRESSION_VAL_LABELS = 100
 CLASSIFICATION_SELECTION_METRIC = "auroc"  # "auroc" or "balanced_accuracy"
-REGRESSION_SELECTION_METRIC = "normalized_mae"  # "normalized_mae" or "pearson"
-
-### Affinity Regression
-AFFINITY_TASK_MODE = "source_specific"  # "shared" or "source_specific"
-AFFINITY_SOURCE_TASKS = ("ppb_affinity", "skempi")
-REGRESSION_LOSS = "huber"  # "mse" or "huber"
-REGRESSION_HUBER_DELTA = 1.0
-AFFINITY_NORMALIZATION = "global"  # "global" or "source"
-MIN_SOURCE_AFFINITY_LABELS = 20
 
 ### Interaction Classification
 INTERACTION_LOSS = "focal"  # "ce" or "focal"
@@ -69,7 +59,6 @@ RESIDUE_POOL_HIDDEN = 256
 GROUP_POOL_HIDDEN = 256
 PAIR_MLP_HIDDEN = 512
 CLASSIFICATION_HEAD_HIDDEN = 256
-REGRESSION_HEAD_HIDDEN = 512
 
 ### Token-Capped Batching
 TRAIN_MAX_TOKENS_PER_BATCH = 49152

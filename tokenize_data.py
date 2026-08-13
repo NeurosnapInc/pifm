@@ -1,6 +1,5 @@
 """
-Pre-tokenize the aggregated interaction-group DuckDB into multitask train,
-validation, and test caches.
+Pre-tokenize aggregated protein-pair interaction data into train/validation/test caches.
 """
 
 import csv
@@ -18,14 +17,11 @@ from transformers import T5Tokenizer
 
 from config import (
   AGGREGATED_DB_PATH,
-  AFFINITY_SOURCE_TASKS,
-  AFFINITY_TASK_MODE,
   CLUSTER_COVERAGE,
   CLUSTER_MIN_SEQ_ID,
   MAX_LENGTH,
   MMSEQS_BINARY,
   MODEL_NAME,
-  REGRESSION_LOSS,
   SEQUENCE_CLUSTER_FASTA_PATH,
   SEQUENCE_CLUSTER_TSV_PATH,
   SEQUENCE_CLUSTER_WORK_DIR,
@@ -33,8 +29,8 @@ from config import (
   SPLIT_STRATEGY,
   TEST_FRACTION,
   TOKENIZED_DATA_DIR,
-  TRAIN_FRACTION,
   TRAIN_CACHE_PATH,
+  TRAIN_FRACTION,
   VAL_FRACTION,
 )
 
@@ -42,7 +38,8 @@ from config import (
 TOKENIZE_BATCH_SIZE = 128
 SUPPORTED_SPLIT_STRATEGIES = {"random", "protein", "cluster"}
 
-TASK_SPECS = {
+TASK_ORDER = ["interaction"]
+TASK_METAS = {
   "interaction": {
     "task_name": "interaction",
     "dtype": "bool",
@@ -50,64 +47,7 @@ TASK_SPECS = {
     "num_classes": 2,
     "loss": "ce",
   },
-  "affinity": {
-    "task_name": "affinity",
-    "dtype": "float",
-    "head_type": "pair_regression",
-    "num_classes": None,
-    "loss": REGRESSION_LOSS,
-  },
 }
-
-
-def _affinity_task_name(source: str) -> str:
-  return f"affinity_{source}"
-
-
-def _affinity_task_spec(task_name: str, source: str):
-  return {
-    "task_name": task_name,
-    "dtype": "float",
-    "head_type": "pair_regression",
-    "num_classes": None,
-    "loss": REGRESSION_LOSS,
-    "base_task": "affinity",
-    "source": source,
-  }
-
-
-def _build_task_definitions(sample_rows):
-  task_order: List[str] = []
-  task_metas = {}
-
-  if any(row[3] is not None for row in sample_rows):
-    task_order.append("interaction")
-    task_metas["interaction"] = TASK_SPECS["interaction"]
-
-  affinity_sources = sorted({row[0] for row in sample_rows if row[4] is not None})
-  if AFFINITY_TASK_MODE == "shared":
-    if affinity_sources:
-      task_order.append("affinity")
-      task_metas["affinity"] = TASK_SPECS["affinity"]
-  elif AFFINITY_TASK_MODE == "source_specific":
-    configured_sources = set(AFFINITY_SOURCE_TASKS)
-    for source in AFFINITY_SOURCE_TASKS:
-      if source not in affinity_sources:
-        continue
-      task_name = _affinity_task_name(source)
-      task_order.append(task_name)
-      task_metas[task_name] = _affinity_task_spec(task_name, source)
-
-    skipped_sources = sorted(set(affinity_sources) - configured_sources)
-    if skipped_sources:
-      print(
-        "Warning: affinity labels skipped for unconfigured sources: "
-        + ", ".join(skipped_sources)
-      )
-  else:
-    raise ValueError(f"Unsupported AFFINITY_TASK_MODE={AFFINITY_TASK_MODE!r}")
-
-  return task_order, task_metas
 
 
 def _validate_split_fractions():
@@ -119,16 +59,6 @@ def _validate_split_fractions():
 def _preprocess_sequence(seq: str) -> str:
   seq = re.sub(r"[UZOB]", "X", seq.upper())
   return "<AA2fold> " + " ".join(seq)
-
-
-def _label_from_dtype(label: float, dtype: str):
-  if dtype == "bool":
-    return 1.0 if float(label) > 0.5 else 0.0
-  return float(label)
-
-
-def _empty_label_row(num_tasks: int):
-  return [0.0] * num_tasks
 
 
 def _sequence_id(sequence: str) -> str:
@@ -257,18 +187,11 @@ def _record_unit_set(record, sequence_to_unit: Dict[str, str]):
 
 def _record_label_stats(record) -> Counter:
   stats = Counter(total=1)
-  interaction_idx = record["task_to_idx"].get("interaction")
-
-  if interaction_idx is not None and record["mask"][interaction_idx]:
-    if record["labels"][interaction_idx] > 0.5:
-      stats["interaction_pos"] += 1
-    else:
-      stats["interaction_neg"] += 1
-
-  for affinity_idx in record["affinity_task_indices"]:
-    if record["mask"][affinity_idx]:
-      stats["affinity"] += 1
-
+  label = record["labels"][0]
+  if label > 0.5:
+    stats["interaction_pos"] += 1
+  else:
+    stats["interaction_neg"] += 1
   stats[f"source:{record['source']}"] += 1
   return stats
 
@@ -301,18 +224,15 @@ def _build_split_units(records, sequence_to_unit: Dict[str, str]):
 
 
 def _weighted_unit_size(stats: Counter):
-  # Affinity labels and negatives are scarce, so sort them earlier during greedy placement.
+  # Negatives are scarce, so sort them earlier during greedy placement.
   return (
     stats["total"]
-    + 20 * stats["affinity"]
     + 20 * stats["interaction_neg"]
     + 2 * stats["interaction_pos"]
   )
 
 
 def _feature_weight(feature_name: str):
-  if feature_name == "affinity":
-    return 20.0
   if feature_name == "interaction_neg":
     return 20.0
   if feature_name.startswith("source:"):
@@ -373,7 +293,7 @@ def _assign_components_label_aware(component_stats, rng):
     component_to_split[component] = best_split
     split_stats[best_split].update(stats)
 
-  return component_to_split, split_stats
+  return component_to_split
 
 
 def _split_records_random(records, rng):
@@ -392,13 +312,13 @@ def _split_records_random(records, rng):
 
 def _split_records_by_sequence_units(records, sequence_to_unit: Dict[str, str], rng):
   component_records, component_stats = _build_split_units(records, sequence_to_unit)
-  component_to_split, split_stats = _assign_components_label_aware(component_stats, rng)
+  component_to_split = _assign_components_label_aware(component_stats, rng)
   split_records = {"train": [], "validation": [], "test": []}
 
   for component, rows in component_records.items():
     split_records[component_to_split[component]].extend(rows)
 
-  return split_records, 0, split_stats
+  return split_records, 0
 
 
 def _split_records(records):
@@ -410,8 +330,7 @@ def _split_records(records):
 
   rng = random.Random(SPLIT_SEED)
   if SPLIT_STRATEGY == "random":
-    split_records, dropped_cross_split = _split_records_random(records, rng)
-    return split_records, dropped_cross_split, None
+    return _split_records_random(records, rng)
 
   if SPLIT_STRATEGY == "protein":
     sequence_to_unit = {sequence: sequence for sequence in _all_unique_sequences(records)}
@@ -421,58 +340,16 @@ def _split_records(records):
   return _split_records_by_sequence_units(records, sequence_to_unit, rng)
 
 
-def _print_split_audit(split_records, task_order, task_to_idx):
+def _print_split_audit(split_records):
   print("Split audit:")
   for split_name in ("train", "validation", "test"):
     rows = split_records[split_name]
     source_counts = Counter(record["source"] for record in rows)
     source_msg = " ".join(f"{source}={count}" for source, count in sorted(source_counts.items()))
-    print(f"  {split_name}: total={len(rows)} sources[{source_msg}]")
-
-    if "interaction" in task_to_idx:
-      task_idx = task_to_idx["interaction"]
-      labels = [record["labels"][task_idx] for record in rows if record["mask"][task_idx]]
-      neg = sum(1 for label in labels if label <= 0.5)
-      pos = len(labels) - neg
-      print(f"    interaction: labels={len(labels)} neg={neg} pos={pos}")
-
-    for task_name in task_order:
-      if not task_name.startswith("affinity"):
-        continue
-      task_idx = task_to_idx[task_name]
-      values = [record["labels"][task_idx] for record in rows if record["mask"][task_idx]]
-      if values:
-        tensor = torch.tensor(values, dtype=torch.float)
-        print(
-          f"    {task_name}: labels={len(values)} "
-          f"mean={tensor.mean().item():.4f} std={tensor.std(unbiased=False).item():.4f}"
-        )
-      else:
-        print(f"    {task_name}: labels=0")
-
-
-def _compute_regression_stats(records, task_order, task_metas):
-  means = torch.zeros(len(task_order), dtype=torch.float)
-  stds = torch.ones(len(task_order), dtype=torch.float)
-
-  for task_idx, task_name in enumerate(task_order):
-    if task_metas[task_name]["dtype"] != "float":
-      continue
-
-    values = [
-      float(record["labels"][task_idx])
-      for record in records
-      if record["mask"][task_idx]
-    ]
-    if not values:
-      continue
-
-    tensor = torch.tensor(values, dtype=torch.float)
-    means[task_idx] = tensor.mean()
-    std = tensor.std(unbiased=False)
-    stds[task_idx] = std if std.item() > 0 else 1.0
-
-  return means, stds
+    labels = [record["labels"][0] for record in rows]
+    neg = sum(1 for label in labels if label <= 0.5)
+    pos = len(labels) - neg
+    print(f"  {split_name}: total={len(rows)} interaction_neg={neg} interaction_pos={pos} sources[{source_msg}]")
 
 
 def _tokenize_unique_sequences(records, tokenizer) -> Dict[str, torch.Tensor]:
@@ -494,7 +371,7 @@ def _tokenize_unique_sequences(records, tokenizer) -> Dict[str, torch.Tensor]:
   return token_map
 
 
-def _build_tokenized_split(records, token_map, task_order, task_metas, means, stds):
+def _build_tokenized_split(records, token_map):
   group1_input_ids = []
   group2_input_ids = []
   raw_labels = []
@@ -508,32 +385,24 @@ def _build_tokenized_split(records, token_map, task_order, task_metas, means, st
     group2_tensors = [token_map[sequence] for sequence in record["group2_sequences"]]
     label_tensor = torch.tensor(record["labels"], dtype=torch.float)
     mask_tensor = torch.tensor(record["mask"], dtype=torch.bool)
-    normalized_tensor = label_tensor.clone()
-
-    for task_idx, task_name in enumerate(task_order):
-      if not mask_tensor[task_idx]:
-        continue
-      if task_metas[task_name]["dtype"] == "float":
-        normalized_tensor[task_idx] = (label_tensor[task_idx] - means[task_idx]) / stds[task_idx]
 
     group1_input_ids.append(group1_tensors)
     group2_input_ids.append(group2_tensors)
     raw_labels.append(label_tensor)
-    normalized_labels.append(normalized_tensor)
+    normalized_labels.append(label_tensor.clone())
     label_mask.append(mask_tensor)
     lengths.append(sum(len(ids) for ids in group1_tensors + group2_tensors))
     sources.append(record["source"])
 
-  num_tasks = len(task_order)
   if raw_labels:
     raw_labels_tensor = torch.stack(raw_labels)
     normalized_labels_tensor = torch.stack(normalized_labels)
     label_mask_tensor = torch.stack(label_mask)
     lengths_tensor = torch.tensor(lengths, dtype=torch.long)
   else:
-    raw_labels_tensor = torch.empty((0, num_tasks), dtype=torch.float)
-    normalized_labels_tensor = torch.empty((0, num_tasks), dtype=torch.float)
-    label_mask_tensor = torch.empty((0, num_tasks), dtype=torch.bool)
+    raw_labels_tensor = torch.empty((0, 1), dtype=torch.float)
+    normalized_labels_tensor = torch.empty((0, 1), dtype=torch.float)
+    label_mask_tensor = torch.empty((0, 1), dtype=torch.bool)
     lengths_tensor = torch.empty((0,), dtype=torch.long)
 
   return {
@@ -547,7 +416,7 @@ def _build_tokenized_split(records, token_map, task_order, task_metas, means, st
   }
 
 
-print("Loading group-pair data from DuckDB")
+print("Loading group-pair interaction data from DuckDB")
 _validate_split_fractions()
 tokenizer = T5Tokenizer.from_pretrained(MODEL_NAME, do_lower_case=False)
 TOKENIZED_DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -556,74 +425,35 @@ con = duckdb.connect(AGGREGATED_DB_PATH)
 try:
   sample_rows = con.execute(
     """
-    SELECT source, group1, group2, interaction_label, affinity_pkd
+    SELECT source, group1, group2, interaction_label
     FROM samples
+    WHERE interaction_label IS NOT NULL
     ORDER BY group1, group2
     """
   ).fetchall()
 
   if not sample_rows:
-    raise ValueError(f"No samples found in {AGGREGATED_DB_PATH}")
-
-  task_order, task_metas = _build_task_definitions(sample_rows)
-
-  if not task_order:
-    raise ValueError("No supervised labels found. Populate interaction_label and/or affinity_pkd before tokenization.")
-
-  task_to_idx = {task_name: idx for idx, task_name in enumerate(task_order)}
-  affinity_task_indices = [
-    idx
-    for idx, task_name in enumerate(task_order)
-    if task_metas[task_name].get("base_task") == "affinity" or task_name == "affinity"
-  ]
+    raise ValueError(f"No interaction-labeled samples found in {AGGREGATED_DB_PATH}")
 
   records = []
-  for source, group1, group2, interaction_label, affinity_pkd in sample_rows:
-    labels = _empty_label_row(len(task_order))
-    mask = [False] * len(task_order)
-
-    if "interaction" in task_to_idx and interaction_label is not None:
-      idx = task_to_idx["interaction"]
-      labels[idx] = _label_from_dtype(interaction_label, "bool")
-      mask[idx] = True
-
-    if AFFINITY_TASK_MODE == "shared" and "affinity" in task_to_idx and affinity_pkd is not None:
-      idx = task_to_idx["affinity"]
-      labels[idx] = _label_from_dtype(affinity_pkd, "float")
-      mask[idx] = True
-    elif AFFINITY_TASK_MODE == "source_specific" and affinity_pkd is not None:
-      task_name = _affinity_task_name(source)
-      if task_name in task_to_idx:
-        idx = task_to_idx[task_name]
-        labels[idx] = _label_from_dtype(affinity_pkd, "float")
-        mask[idx] = True
-
-    if not any(mask):
-      continue
-
+  for source, group1, group2, interaction_label in sample_rows:
     records.append(
       {
         "group1": group1,
         "group2": group2,
         "group1_sequences": group1.split(":"),
         "group2_sequences": group2.split(":"),
-        "labels": labels,
-        "mask": mask,
+        "labels": [1.0 if float(interaction_label) > 0.5 else 0.0],
+        "mask": [True],
         "source": source,
-        "task_to_idx": task_to_idx,
-        "affinity_task_indices": affinity_task_indices,
       }
     )
 
-  if not records:
-    raise ValueError("No labeled records remained after filtering.")
-
-  split_records, dropped_cross_split, _ = _split_records(records)
+  split_records, dropped_cross_split = _split_records(records)
 
   if len(split_records["train"]) == 0 or len(split_records["validation"]) == 0:
     raise ValueError("Train/validation split is empty; adjust dataset size or split fractions.")
 
-  train_means, train_stds = _compute_regression_stats(split_records["train"], task_order, task_metas)
   token_map = _tokenize_unique_sequences(records, tokenizer)
 
   print(
@@ -631,34 +461,22 @@ try:
     f"pairs: train={len(split_records['train'])} "
     f"val={len(split_records['validation'])} test={len(split_records['test'])}"
   )
-  _print_split_audit(split_records, task_order, task_to_idx)
-  for task_name in task_order:
-    task_idx = task_to_idx[task_name]
-    counts = {
-      split_name: sum(1 for record in rows if record["mask"][task_idx])
-      for split_name, rows in split_records.items()
-    }
-    if counts["train"] == 0 or counts["validation"] == 0:
-      raise ValueError(
-        f"Task '{task_name}' has labels(train/val/test)="
-        f"{counts['train']}/{counts['validation']}/{counts['test']} after splitting."
-      )
-    stats_msg = ""
-    if task_metas[task_name]["dtype"] == "float":
-      stats_msg = f" mean={train_means[task_idx].item():.4f} std={train_stds[task_idx].item():.4f}"
-    print(
-      f"Task={task_name} dtype={task_metas[task_name]['dtype']} "
-      f"labels(train/val/test)={counts['train']}/{counts['validation']}/{counts['test']}{stats_msg}"
-    )
+  _print_split_audit(split_records)
 
-  tokenized_splits = {}
   for split_name, rows in split_records.items():
-    tokenized_splits[split_name] = _build_tokenized_split(rows, token_map, task_order, task_metas, train_means, train_stds)
+    neg = sum(1 for record in rows if record["labels"][0] <= 0.5)
+    pos = len(rows) - neg
+    print(f"Task=interaction split={split_name} labels={len(rows)} neg={neg} pos={pos}")
+
+  tokenized_splits = {
+    split_name: _build_tokenized_split(rows, token_map)
+    for split_name, rows in split_records.items()
+  }
 
   torch.save(
     {
-      "task_order": task_order,
-      "task_metas": task_metas,
+      "task_order": TASK_ORDER,
+      "task_metas": TASK_METAS,
       "config": {
         "model_name": MODEL_NAME,
         "db_path": str(AGGREGATED_DB_PATH),
@@ -674,18 +492,12 @@ try:
         "test_fraction": TEST_FRACTION,
         "max_length": MAX_LENGTH,
         "pad_token_id": tokenizer.pad_token_id,
-        "cache_format": "multitask_group_pair_v1",
-        "affinity_task_mode": AFFINITY_TASK_MODE,
-        "affinity_source_tasks": list(AFFINITY_SOURCE_TASKS),
-      },
-      "normalization": {
-        "train_mean": train_means,
-        "train_std": train_stds,
+        "cache_format": "interaction_group_pair_v1",
       },
       "splits": tokenized_splits,
     },
     TRAIN_CACHE_PATH,
   )
-  print(f"Saved multitask tokenized splits -> {TRAIN_CACHE_PATH}")
+  print(f"Saved interaction tokenized splits -> {TRAIN_CACHE_PATH}")
 finally:
   con.close()

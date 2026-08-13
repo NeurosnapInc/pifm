@@ -1,5 +1,5 @@
 """
-Validate a trained multitask protein-group pair checkpoint on a cached split.
+Validate a trained interaction checkpoint on a cached split.
 """
 
 import argparse
@@ -14,8 +14,6 @@ from calibration import (
   apply_posthoc_calibration,
   classification_report,
   format_posthoc_classification_rows,
-  format_posthoc_regression_rows,
-  regression_report,
 )
 from config import (
   ADAPTER_DIM,
@@ -25,7 +23,6 @@ from config import (
   DROPOUT,
   EVAL_MAX_TOKENS_PER_BATCH,
   MODEL_NAME,
-  REGRESSION_HEAD_HIDDEN,
   TOKENIZED_DATA_DIR,
   USE_BACKBONE_EMBEDDING_CACHE,
 )
@@ -40,6 +37,7 @@ from model import (
 
 
 DEFAULT_CACHE_PATH = TOKENIZED_DATA_DIR / "multitask_group_pair_prostt5_tokens.pt"
+TASK_NAME = "interaction"
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 AMP_ENABLED = DEVICE.type == "cuda"
@@ -78,32 +76,19 @@ def _empty_prediction_bucket():
   }
 
 
-def _append_task_predictions(target, task_name, labels, preds, scores, sources=None):
-  target[task_name]["labels"].extend(labels)
-  target[task_name]["preds"].extend(preds)
-  target[task_name]["scores"].extend(scores)
+def _append_predictions(target, labels, preds, scores, sources=None):
+  target[TASK_NAME]["labels"].extend(labels)
+  target[TASK_NAME]["preds"].extend(preds)
+  target[TASK_NAME]["scores"].extend(scores)
 
   if sources is None:
     return
 
   for source, label, pred, score in zip(sources, labels, preds, scores):
-    bucket = target[task_name]["by_source"][source]
+    bucket = target[TASK_NAME]["by_source"][source]
     bucket["labels"].append(label)
     bucket["preds"].append(pred)
     bucket["scores"].append(score)
-
-
-def _append_regression_predictions(target, task_name, labels, preds, sources=None):
-  target[task_name]["labels"].extend(labels)
-  target[task_name]["preds"].extend(preds)
-
-  if sources is None:
-    return
-
-  for source, label, pred in zip(sources, labels, preds):
-    bucket = target[task_name]["by_source"][source]
-    bucket["labels"].append(label)
-    bucket["preds"].append(pred)
 
 
 def _classification_row(task_name, n, report, prefix=None):
@@ -130,83 +115,40 @@ def _classification_row(task_name, n, report, prefix=None):
   return ([prefix] if prefix is not None else []) + row
 
 
-def _regression_row(task_name, n, report, prefix=None):
-  row = [
-    task_name,
-    n,
-    _format_float(report["label_mean"]),
-    _format_float(report["label_std"]),
-    _format_float(report["pred_mean"]),
-    _format_float(report["pred_std"]),
-    _format_float(report["mae"]),
-    _format_float(report["rmse"]),
-    _format_float(report["pearson"]),
-    _format_float(report["spearman"]),
-    _format_float(report["r2"]),
-  ]
-  return ([prefix] if prefix is not None else []) + row
-
-
-def _source_norm_tensors(task_name, sources, source_regression_stats, device):
-  task_stats = (source_regression_stats or {}).get(task_name, {})
-  fallback = task_stats.get("__global__", {"mean": 0.0, "std": 1.0})
-  means = []
-  stds = []
-  for source in sources:
-    stats = task_stats.get(source, fallback)
-    means.append(stats["mean"])
-    stds.append(stats["std"])
-  return (
-    torch.tensor(means, dtype=torch.float, device=device),
-    torch.tensor(stds, dtype=torch.float, device=device),
-  )
-
-
-def _denormalize_regression_preds(task_name, normalized_preds, sources, source_regression_stats):
-  means, stds = _source_norm_tensors(task_name, sources, source_regression_stats, normalized_preds.device)
-  return normalized_preds * stds + means
-
-
-def _source_normalized_regression_report(by_source):
-  normalized_labels = []
-  normalized_preds = []
-
-  for values in by_source.values():
-    labels = values["labels"]
-    preds = values["preds"]
-    if len(labels) < 2:
-      continue
-
-    label_tensor = torch.tensor(labels, dtype=torch.float)
-    std = label_tensor.std(unbiased=False).item()
-    if std == 0.0:
-      continue
-    mean = label_tensor.mean().item()
-    normalized_labels.extend((label - mean) / std for label in labels)
-    normalized_preds.extend((pred - mean) / std for pred in preds)
-
-  if not normalized_labels:
-    return None, 0
-  return regression_report(normalized_labels, normalized_preds), len(normalized_labels)
-
-
 CLASSIFICATION_COLUMNS = [
   "task", "n", "acc", "bal_acc", "precision", "recall", "specificity", "neg_recall",
   "f1", "mcc", "tn", "fp", "fn", "tp", "auroc", "auprc", "label_ratio", "pred_ratio",
 ]
-REGRESSION_COLUMNS = [
-  "task", "n", "label_mean", "label_std", "pred_mean", "pred_std", "mae", "rmse",
-  "pearson", "spearman", "r2",
-]
 
 
 def parse_args():
-  parser = argparse.ArgumentParser(description="Validate a trained multitask group-pair checkpoint.")
+  parser = argparse.ArgumentParser(description="Validate a trained interaction checkpoint.")
   parser.add_argument("--checkpoint", required=True, help="Path to the saved adapter checkpoint.")
   parser.add_argument("--cache", default=str(DEFAULT_CACHE_PATH), help="Path to the tokenized cache.")
   parser.add_argument("--split", default="validation", choices=["train", "validation", "test"], help="Dataset split to evaluate.")
   parser.add_argument("--batch-size", type=int, default=BATCH_SIZE, help="Batch size for evaluation.")
   return parser.parse_args()
+
+
+def _load_embedding_cache(model_name, tokenized_cache_path):
+  if USE_BACKBONE_EMBEDDING_CACHE and BACKBONE_EMBEDDING_CACHE_PATH.exists():
+    embedding_cache, payload = load_backbone_embedding_cache(
+      BACKBONE_EMBEDDING_CACHE_PATH,
+      expected_model_name=model_name,
+      expected_tokenized_cache_path=tokenized_cache_path,
+    )
+    print(
+      f"Using frozen backbone embedding cache from {BACKBONE_EMBEDDING_CACHE_PATH} "
+      f"sequences={payload.get('num_sequences', len(embedding_cache))}"
+    )
+    return embedding_cache
+
+  if USE_BACKBONE_EMBEDDING_CACHE:
+    print(
+      f"Backbone embedding cache not found at {BACKBONE_EMBEDDING_CACHE_PATH}; "
+      "falling back to on-the-fly ProstT5 encoding."
+    )
+  return None
 
 
 def main():
@@ -218,29 +160,15 @@ def main():
 
   task_order = payload["task_order"]
   task_metas = payload["task_metas"]
+  if task_order != [TASK_NAME]:
+    raise ValueError(f"Expected interaction-only cache, found task_order={task_order!r}. Re-run tokenize_data.py.")
+
   split_payload = payload["splits"][args.split]
   train_split = payload["splits"]["train"]
   pad_token_id = payload["config"]["pad_token_id"]
-  regression_means = payload["normalization"]["train_mean"].to(DEVICE)
-  regression_stds = payload["normalization"]["train_std"].to(DEVICE)
-  source_regression_stats = checkpoint["config"].get("source_regression_stats", {})
-
-  embedding_cache = None
-  embedding_cache_payload = None
-  if USE_BACKBONE_EMBEDDING_CACHE and BACKBONE_EMBEDDING_CACHE_PATH.exists():
-    embedding_cache, embedding_cache_payload = load_backbone_embedding_cache(
-      BACKBONE_EMBEDDING_CACHE_PATH,
-      expected_model_name=checkpoint["config"].get("model_name", MODEL_NAME),
-    )
-    print(
-      f"Using frozen backbone embedding cache from {BACKBONE_EMBEDDING_CACHE_PATH} "
-      f"sequences={embedding_cache_payload.get('num_sequences', len(embedding_cache))}"
-    )
-  elif USE_BACKBONE_EMBEDDING_CACHE:
-    print(
-      f"Backbone embedding cache not found at {BACKBONE_EMBEDDING_CACHE_PATH}; "
-      "falling back to on-the-fly ProstT5 encoding."
-    )
+  task_idx = task_order.index(TASK_NAME)
+  model_name = checkpoint["config"].get("model_name", MODEL_NAME)
+  embedding_cache = _load_embedding_cache(model_name, args.cache)
 
   dataset = MultiTaskGroupPairDataset(split_payload, embedding_cache=embedding_cache)
   loader = DataLoader(
@@ -254,21 +182,20 @@ def main():
     pin_memory=PIN_MEMORY,
   )
 
-  task_output_dims = {}
-  for task_idx, task_name in enumerate(task_order):
-    meta = task_metas[task_name]
-    train_mask = train_split["label_mask"][:, task_idx]
-    train_labels = train_split["raw_labels"][:, task_idx]
-    task_output_dims[task_name] = output_dim_from_meta(meta, train_labels, train_mask)
+  train_mask = train_split["label_mask"][:, task_idx]
+  train_labels = train_split["raw_labels"][:, task_idx]
+  task_output_dims = {
+    TASK_NAME: output_dim_from_meta(task_metas[TASK_NAME], train_labels, train_mask),
+  }
 
   embed_dim = checkpoint["config"]["embed_dim"]
   if embedding_cache is None:
-    model_name = checkpoint["config"].get("model_name", MODEL_NAME)
     base_model = T5EncoderModel.from_pretrained(model_name).to(DEVICE)
     if DEVICE.type == "cuda":
       base_model.bfloat16()
   else:
     base_model = None
+
   model = MultiTaskGroupPairModel(
     base_model,
     task_order,
@@ -278,7 +205,6 @@ def main():
     adapter_dim=checkpoint["config"].get("adapter_dim", ADAPTER_DIM),
     dropout=checkpoint["config"].get("dropout", DROPOUT),
     classification_head_hidden=checkpoint["config"].get("classification_head_hidden", CLASSIFICATION_HEAD_HIDDEN),
-    regression_head_hidden=checkpoint["config"].get("regression_head_hidden", REGRESSION_HEAD_HIDDEN),
   ).to(DEVICE)
 
   model.adapter.load_state_dict(checkpoint["adapter_state_dict"])
@@ -290,28 +216,18 @@ def main():
   model.eval()
 
   predictions = {
-    task_name: {
+    TASK_NAME: {
       "labels": [],
       "preds": [],
       "scores": [],
       "by_source": defaultdict(_empty_prediction_bucket),
     }
-    for task_name in task_order
   }
 
   print(f"Running evaluation on split='{args.split}'")
   with torch.no_grad():
-    for (
-      input_ids,
-      input_embeddings,
-      attn_mask,
-      chain_to_sample,
-      chain_to_group,
-      raw_labels,
-      normalized_labels,
-      label_mask,
-      sources,
-    ) in tqdm(loader, desc="Validate"):
+    for batch in tqdm(loader, desc="Validate"):
+      input_ids, input_embeddings, attn_mask, chain_to_sample, chain_to_group, raw_labels, normalized_labels, label_mask, sources = batch
       if input_ids is not None:
         input_ids = input_ids.to(DEVICE, non_blocking=PIN_MEMORY)
       if input_embeddings is not None:
@@ -332,43 +248,22 @@ def main():
           precomputed_embeddings=input_embeddings,
         )
 
-      for task_idx, task_name in enumerate(task_order):
-        mask = label_mask[:, task_idx]
-        if not mask.any():
-          continue
+      mask = label_mask[:, task_idx]
+      if not mask.any():
+        continue
 
-        meta = task_metas[task_name]
-        if meta["dtype"] == "float":
-          preds_norm = outputs[task_name][mask].squeeze(-1).float()
-          labels = raw_labels[mask, task_idx].float()
-          mask_list = mask.detach().cpu().tolist()
-          masked_sources = [source for source, keep in zip(sources, mask_list) if keep]
-          if task_name in source_regression_stats:
-            preds = _denormalize_regression_preds(task_name, preds_norm, masked_sources, source_regression_stats)
-          else:
-            preds = preds_norm * regression_stds[task_idx] + regression_means[task_idx]
-          _append_regression_predictions(
-            predictions,
-            task_name,
-            labels.cpu().tolist(),
-            preds.cpu().tolist(),
-            masked_sources,
-          )
-        else:
-          logits = outputs[task_name][mask].float()
-          probs = torch.softmax(logits, dim=1)
-          preds = probs.argmax(dim=1)
-          labels = raw_labels[mask, task_idx].long()
-          mask_list = mask.detach().cpu().tolist()
-          masked_sources = [source for source, keep in zip(sources, mask_list) if keep]
-          _append_task_predictions(
-            predictions,
-            task_name,
-            labels.cpu().tolist(),
-            preds.cpu().tolist(),
-            probs[:, 1].cpu().tolist(),
-            masked_sources,
-          )
+      logits = outputs[TASK_NAME][mask].float()
+      probs = torch.softmax(logits, dim=1)
+      preds = probs.argmax(dim=1)
+      labels = raw_labels[mask, task_idx].long()
+      masked_sources = [source for source, keep in zip(sources, mask.detach().cpu().tolist()) if keep]
+      _append_predictions(
+        predictions,
+        labels.cpu().tolist(),
+        preds.cpu().tolist(),
+        probs[:, 1].cpu().tolist(),
+        masked_sources,
+      )
 
   print()
   print(f"Dataset size ({args.split}): {len(dataset)} pairs")
@@ -376,139 +271,70 @@ def main():
   print(f"Cache: {args.cache}")
   print()
 
-  classification_rows = []
-  regression_rows = []
-  for task_name in sorted(task_order):
-    labels = predictions[task_name]["labels"]
-    preds = predictions[task_name]["preds"]
-    if not labels:
-      continue
-
-    meta = task_metas[task_name]
-    if meta["dtype"] == "bool":
-      report = classification_report(labels, preds, predictions[task_name]["scores"])
-      classification_rows.append(_classification_row(task_name, len(labels), report))
-    else:
-      report = regression_report(labels, preds)
-      regression_rows.append(_regression_row(task_name, len(labels), report))
-
+  report = classification_report(
+    predictions[TASK_NAME]["labels"],
+    predictions[TASK_NAME]["preds"],
+    predictions[TASK_NAME]["scores"],
+  )
   print(
     _format_table(
       "Classification Tasks",
       CLASSIFICATION_COLUMNS,
-      classification_rows,
-    )
-  )
-  print(
-    _format_table(
-      "Regression Tasks",
-      REGRESSION_COLUMNS,
-      regression_rows,
+      [_classification_row(TASK_NAME, len(predictions[TASK_NAME]["labels"]), report)],
     )
   )
 
-  source_classification_rows = []
-  source_regression_rows = []
-  source_normalized_regression_rows = []
-  for task_name in sorted(task_order):
-    meta = task_metas[task_name]
-    for source, source_values in sorted(predictions[task_name]["by_source"].items()):
-      labels = source_values["labels"]
-      preds = source_values["preds"]
-      if not labels:
-        continue
-
-      if meta["dtype"] == "bool":
-        report = classification_report(labels, preds, source_values["scores"])
-        source_classification_rows.append(_classification_row(task_name, len(labels), report, prefix=source))
-      else:
-        report = regression_report(labels, preds)
-        source_regression_rows.append(_regression_row(task_name, len(labels), report, prefix=source))
-
-    if meta["dtype"] == "float":
-      report, source_normalized_n = _source_normalized_regression_report(predictions[task_name]["by_source"])
-      if report is not None:
-        source_normalized_regression_rows.append(_regression_row(task_name, source_normalized_n, report))
+  source_rows = []
+  for source, source_values in sorted(predictions[TASK_NAME]["by_source"].items()):
+    labels = source_values["labels"]
+    if not labels:
+      continue
+    source_report = classification_report(labels, source_values["preds"], source_values["scores"])
+    source_rows.append(_classification_row(TASK_NAME, len(labels), source_report, prefix=source))
 
   print(
     _format_table(
       "Source-Specific Classification Tasks",
       ["source"] + CLASSIFICATION_COLUMNS,
-      source_classification_rows,
-    )
-  )
-  print(
-    _format_table(
-      "Source-Specific Regression Tasks",
-      ["source"] + REGRESSION_COLUMNS,
-      source_regression_rows,
-    )
-  )
-  print(
-    _format_table(
-      "Source-Normalized Regression Tasks",
-      REGRESSION_COLUMNS,
-      source_normalized_regression_rows,
+      source_rows,
     )
   )
 
   checkpoint_calibration = checkpoint["config"].get("calibration")
   if checkpoint_calibration:
     calibrated_predictions = apply_posthoc_calibration(predictions, task_metas, checkpoint_calibration)
-    checkpoint_classification_rows = []
-    checkpoint_regression_rows = []
     classification_params = checkpoint_calibration.get("classification", {})
-    regression_params = checkpoint_calibration.get("regression", {})
+    checkpoint_rows = []
 
-    for task_name in sorted(task_order):
-      labels = calibrated_predictions[task_name]["labels"]
-      preds = calibrated_predictions[task_name]["preds"]
-      if not labels:
-        continue
-
-      meta = task_metas[task_name]
-      if meta["dtype"] == "bool" and task_name in classification_params:
-        report = classification_report(labels, preds, calibrated_predictions[task_name]["scores"])
-        checkpoint_classification_rows.append(
-          [
-            task_name,
-            classification_params[task_name]["calibration_size"],
-            _format_float(classification_params[task_name]["threshold"]),
-            _format_float(report["acc"]),
-            _format_float(report["balanced_acc"]),
-            _format_float(report["precision"]),
-            _format_float(report["recall"]),
-            _format_float(report["specificity"]),
-            _format_float(report["negative_recall"]),
-            _format_float(report["f1"]),
-            _format_float(report["mcc"]),
-            report["tn"],
-            report["fp"],
-            report["fn"],
-            report["tp"],
-            _format_float(report["auroc"]),
-            _format_float(report["auprc"]),
-            report["label_ratio"],
-            report["pred_ratio"],
-          ]
-        )
-      elif meta["dtype"] == "float" and task_name in regression_params:
-        report = regression_report(labels, preds)
-        checkpoint_regression_rows.append(
-          [
-            task_name,
-            regression_params[task_name]["calibration_size"],
-            _format_float(regression_params[task_name]["slope"]),
-            _format_float(regression_params[task_name]["intercept"]),
-            _format_float(report["pred_mean"]),
-            _format_float(report["pred_std"]),
-            _format_float(report["mae"]),
-            _format_float(report["rmse"]),
-            _format_float(report["pearson"]),
-            _format_float(report["spearman"]),
-            _format_float(report["r2"]),
-          ]
-        )
+    if TASK_NAME in classification_params:
+      calibrated_report = classification_report(
+        calibrated_predictions[TASK_NAME]["labels"],
+        calibrated_predictions[TASK_NAME]["preds"],
+        calibrated_predictions[TASK_NAME]["scores"],
+      )
+      checkpoint_rows.append(
+        [
+          TASK_NAME,
+          classification_params[TASK_NAME]["calibration_size"],
+          _format_float(classification_params[TASK_NAME]["threshold"]),
+          _format_float(calibrated_report["acc"]),
+          _format_float(calibrated_report["balanced_acc"]),
+          _format_float(calibrated_report["precision"]),
+          _format_float(calibrated_report["recall"]),
+          _format_float(calibrated_report["specificity"]),
+          _format_float(calibrated_report["negative_recall"]),
+          _format_float(calibrated_report["f1"]),
+          _format_float(calibrated_report["mcc"]),
+          calibrated_report["tn"],
+          calibrated_report["fp"],
+          calibrated_report["fn"],
+          calibrated_report["tp"],
+          _format_float(calibrated_report["auroc"]),
+          _format_float(calibrated_report["auprc"]),
+          calibrated_report["label_ratio"],
+          calibrated_report["pred_ratio"],
+        ]
+      )
 
     print(
       _format_table(
@@ -518,14 +344,7 @@ def main():
           "neg_recall", "f1", "mcc", "tn", "fp", "fn", "tp", "auroc", "auprc",
           "label_ratio", "pred_ratio",
         ],
-        checkpoint_classification_rows,
-      )
-    )
-    print(
-      _format_table(
-        "Checkpoint Regression Calibration Applied",
-        ["task", "cal_n", "slope", "intercept", "pred_mean", "pred_std", "mae", "rmse", "pearson", "spearman", "r2"],
-        checkpoint_regression_rows,
+        checkpoint_rows,
       )
     )
   else:
@@ -538,13 +357,6 @@ def main():
           "auprc", "label_ratio", "pred_ratio",
         ],
         format_posthoc_classification_rows(predictions, task_metas),
-      )
-    )
-    print(
-      _format_table(
-        "Post-hoc Regression Calibration (fit on internal half, report on held-out half)",
-        ["task", "cal_n", "rep_n", "slope", "intercept", "pred_mean", "pred_std", "mae", "rmse", "pearson", "spearman", "r2"],
-        format_posthoc_regression_rows(predictions, task_metas),
       )
     )
 

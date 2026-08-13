@@ -1,41 +1,10 @@
 """
-Post-hoc calibration utilities for protein-group pair validation outputs.
+Post-hoc calibration and reporting utilities for interaction classification.
 """
 
 from collections import Counter
 
-import torch
-from sklearn.metrics import (
-  accuracy_score,
-  f1_score,
-  mean_absolute_error,
-  mean_squared_error,
-  r2_score,
-  matthews_corrcoef,
-  roc_auc_score,
-  average_precision_score,
-)
-
-
-def fit_linear_regression_calibrator(preds, labels):
-  preds_tensor = torch.tensor(preds, dtype=torch.float)
-  labels_tensor = torch.tensor(labels, dtype=torch.float)
-
-  pred_mean = preds_tensor.mean()
-  label_mean = labels_tensor.mean()
-  centered_preds = preds_tensor - pred_mean
-  variance = centered_preds.pow(2).mean()
-  if variance.item() == 0.0:
-    return 0.0, label_mean.item()
-
-  covariance = (centered_preds * (labels_tensor - label_mean)).mean()
-  slope = covariance.div(variance).item()
-  intercept = (label_mean - slope * pred_mean).item()
-  return slope, intercept
-
-
-def apply_linear_regression_calibrator(preds, slope, intercept):
-  return [slope * pred + intercept for pred in preds]
+from sklearn.metrics import f1_score, matthews_corrcoef, roc_auc_score, average_precision_score
 
 
 def tune_binary_threshold(labels, scores):
@@ -58,7 +27,6 @@ def fit_posthoc_calibration(predictions, task_metas, calibration_split="validati
   calibration = {
     "source_split": calibration_split,
     "classification": {},
-    "regression": {},
   }
 
   for task_name, values in predictions.items():
@@ -67,14 +35,7 @@ def fit_posthoc_calibration(predictions, task_metas, calibration_split="validati
       continue
 
     meta = task_metas[task_name]
-    if meta["dtype"] == "float":
-      slope, intercept = fit_linear_regression_calibrator(values["preds"], labels)
-      calibration["regression"][task_name] = {
-        "slope": slope,
-        "intercept": intercept,
-        "calibration_size": len(labels),
-      }
-    elif meta["dtype"] == "bool" and len(set(labels)) >= 2:
+    if meta["dtype"] == "bool" and len(set(labels)) >= 2:
       threshold = tune_binary_threshold(labels, values["scores"])
       calibration["classification"][task_name] = {
         "threshold": threshold,
@@ -87,7 +48,6 @@ def fit_posthoc_calibration(predictions, task_metas, calibration_split="validati
 def apply_posthoc_calibration(predictions, task_metas, calibration):
   calibrated = {}
   classification_calibration = (calibration or {}).get("classification", {})
-  regression_calibration = (calibration or {}).get("regression", {})
 
   for task_name, values in predictions.items():
     task_values = {
@@ -95,10 +55,7 @@ def apply_posthoc_calibration(predictions, task_metas, calibration):
       for key, value in values.items()
     }
     meta = task_metas[task_name]
-    if meta["dtype"] == "float" and task_name in regression_calibration:
-      params = regression_calibration[task_name]
-      task_values["preds"] = apply_linear_regression_calibrator(task_values["preds"], params["slope"], params["intercept"])
-    elif meta["dtype"] == "bool" and task_name in classification_calibration:
+    if meta["dtype"] == "bool" and task_name in classification_calibration:
       params = classification_calibration[task_name]
       task_values["preds"] = apply_binary_threshold(task_values["scores"], params["threshold"])
     calibrated[task_name] = task_values
@@ -118,40 +75,6 @@ def _label_ratio_string(labels):
   counts = Counter(labels)
   total = len(labels)
   return " ".join(f"{label}:{counts[label] / total:.3f}" for label in sorted(counts))
-
-
-def _pearson_corr(labels, preds):
-  if len(labels) < 2:
-    return None
-  labels_tensor = torch.tensor(labels, dtype=torch.float)
-  preds_tensor = torch.tensor(preds, dtype=torch.float)
-  centered_labels = labels_tensor - labels_tensor.mean()
-  centered_preds = preds_tensor - preds_tensor.mean()
-  denominator = torch.sqrt(centered_labels.pow(2).sum() * centered_preds.pow(2).sum())
-  if denominator.item() == 0.0:
-    return None
-  return (centered_labels * centered_preds).sum().div(denominator).item()
-
-
-def _average_ranks(values):
-  indexed = sorted(enumerate(values), key=lambda item: item[1])
-  ranks = [0.0] * len(values)
-  start = 0
-  while start < len(indexed):
-    end = start + 1
-    while end < len(indexed) and indexed[end][1] == indexed[start][1]:
-      end += 1
-    average_rank = (start + end - 1) / 2.0 + 1.0
-    for idx in range(start, end):
-      ranks[indexed[idx][0]] = average_rank
-    start = end
-  return ranks
-
-
-def _spearman_corr(labels, preds):
-  if len(labels) < 2:
-    return None
-  return _pearson_corr(_average_ranks(labels), _average_ranks(preds))
 
 
 def _binary_confusion_counts(labels, preds):
@@ -185,12 +108,10 @@ def classification_report(labels, preds, scores):
   positive_recall = tp / (tp + fn) if (tp + fn) else 0.0
   specificity = tn / (tn + fp) if (tn + fp) else None
   balanced_acc = None
-  if positive_recall is not None and specificity is not None:
+  if specificity is not None:
     balanced_acc = (positive_recall + specificity) / 2.0
-  elif positive_recall is not None:
+  else:
     balanced_acc = positive_recall
-  elif specificity is not None:
-    balanced_acc = specificity
 
   report = {
     "acc": (tp + tn) / total if total else None,
@@ -208,31 +129,8 @@ def classification_report(labels, preds, scores):
     "label_ratio": _label_ratio_string(labels),
     "pred_ratio": _label_ratio_string(preds),
   }
-  if len(set(labels)) >= 2:
-    report["auroc"] = roc_auc_score(labels, scores)
-  else:
-    report["auroc"] = None
+  report["auroc"] = roc_auc_score(labels, scores) if len(set(labels)) >= 2 else None
   report["auprc"] = _binary_average_precision(labels, scores)
-  return report
-
-
-def regression_report(labels, preds):
-  labels_tensor = torch.tensor(labels, dtype=torch.float)
-  preds_tensor = torch.tensor(preds, dtype=torch.float)
-  report = {
-    "label_mean": labels_tensor.mean().item(),
-    "label_std": labels_tensor.std(unbiased=False).item(),
-    "pred_mean": preds_tensor.mean().item(),
-    "pred_std": preds_tensor.std(unbiased=False).item(),
-    "mae": mean_absolute_error(labels, preds),
-    "rmse": mean_squared_error(labels, preds) ** 0.5,
-    "pearson": _pearson_corr(labels, preds),
-    "spearman": _spearman_corr(labels, preds),
-  }
-  try:
-    report["r2"] = r2_score(labels, preds)
-  except ValueError:
-    report["r2"] = None
   return report
 
 
@@ -274,38 +172,6 @@ def format_posthoc_classification_rows(predictions, task_metas):
         _format_float(report["auprc"]),
         report["label_ratio"],
         report["pred_ratio"],
-      ]
-    )
-  return rows
-
-
-def format_posthoc_regression_rows(predictions, task_metas):
-  rows = []
-  for task_name, values in sorted(predictions.items()):
-    if task_metas[task_name]["dtype"] != "float" or len(values["labels"]) < 4:
-      continue
-    labels = values["labels"]
-    preds = values["preds"]
-    calib_labels = labels[::2]
-    calib_preds = preds[::2]
-    report_labels = labels[1::2]
-    report_preds = preds[1::2]
-    slope, intercept = fit_linear_regression_calibrator(calib_preds, calib_labels)
-    report = regression_report(report_labels, apply_linear_regression_calibrator(report_preds, slope, intercept))
-    rows.append(
-      [
-        task_name,
-        len(calib_labels),
-        len(report_labels),
-        _format_float(slope),
-        _format_float(intercept),
-        _format_float(report["pred_mean"]),
-        _format_float(report["pred_std"]),
-        _format_float(report["mae"]),
-        _format_float(report["rmse"]),
-        _format_float(report["pearson"]),
-        _format_float(report["spearman"]),
-        _format_float(report["r2"]),
       ]
     )
   return rows

@@ -1,8 +1,8 @@
 # Protein Interaction Foundation Model (PIFM)
-> A fast, scalable protein language model for predicting protein-protein interactions (PPI) and binding affinity between arbitrary protein complexes.
+> A fast, scalable protein language model for predicting protein-protein interactions (PPI) between arbitrary protein complexes.
 
 ## Overview
-The goal of this project is to develop a lightweight and highly efficient model capable of predicting whether two groups of proteins interact and, if so, estimating their binding affinity.
+The goal of this project is to develop a lightweight and highly efficient model capable of predicting whether two groups of proteins interact.
 
 Unlike structure-based approaches (e.g., AlphaFold-Multimer, docking, molecular dynamics), this model should operate directly from amino acid sequences while maintaining inference speeds suitable for high-throughput screening.
 
@@ -43,7 +43,6 @@ Rather than training an entirely new protein language model, this project builds
 Primary objectives:
 
 - Predict whether two protein groups interact
-- Predict binding affinity (log-scale Kd / pKd)
 - Support an arbitrary number of proteins on each interaction side
 - Maintain inference speeds orders of magnitude faster than structural prediction methods
 - Enable cached embeddings for repeated screening
@@ -108,20 +107,11 @@ Protein Group B
  Prediction Head
 ┌────────────────┐
 │ Interaction    │
-│ Affinity (pKd) │
 └────────────────┘
 ```
 
-### Multi-Task Learning
-Rather than training only affinity regression, jointly train:
-- interaction classification
-- affinity prediction
-
-Advantages:
-- Better regularization
-- Improved generalization
-- More useful embeddings
-- Handles noisy affinity labels better
+### Training Scope
+Downstream training is currently interaction classification only. Affinity values may still be retained during aggregation for future reference, but tokenization, training, validation, and calibration ignore affinity targets.
 
 ## Data Sources & Downloads
 Aggregation is source-driven. Each dataset has a loader in the `sources/` package that yields `InteractionEntry` objects; loaders are registered (in
@@ -171,7 +161,7 @@ This can reduce allocator fragmentation and avoid failures such as attempts to a
 https://pytorch.org/docs/stable/notes/cuda.html#environment-variables
 
 ### Adding a new source
-1. Add `sources/<name>.py` with `def iter_<name>() -> Iterator[InteractionEntry]` (yield **sequences only**; set `interaction_label` and/or `affinity_nm`).
+1. Add `sources/<name>.py` with `def iter_<name>() -> Iterator[InteractionEntry]` (yield **sequences only**; set `interaction_label`; `affinity_nm` may be retained in aggregation but is ignored downstream).
 2. Register a `SourceSpec` in `sources.build_source_specs()` — list position sets priority (earlier wins on duplicate canonical pairs).
 3. Document its download here, targeting `./data/raw/<name>/`.
 
@@ -185,12 +175,12 @@ wget -P data/raw/uniprot https://ftp.uniprot.org/pub/databases/uniprot/current_r
 ### Registered sources
 | Source | Labels | Pos/Neg | Download |
 |---|---|---|---|
-| PPB-Affinity filtered | affinity | positive | free (Hugging Face) |
-| SKEMPI v2.0 | affinity | positive | free (~32 MB) |
+| PPB-Affinity filtered | affinity-derived binary | positive | free (Hugging Face) |
+| SKEMPI v2.0 | affinity-derived binary | positive | free (~32 MB) |
 | IntAct | binary | positive + negative | free (FTP, large ZIP) |
 | Negatome 2.0 | binary | **negative** | free |
 | STRING (filtered) | binary | positive | free (per species) |
-| literature-derived | affinity (+optional binary) | user-defined | user-provided CSV |
+| literature-derived | optional binary + retained affinity | user-defined | user-provided CSV |
 
 ### PPB-Affinity filtered (protein–protein affinities, positives)
 The filtered PPB-Affinity CSV provides pre-extracted `Ligand Sequences`, `Receptor Sequences`, and `KD(M)` columns. `KD(M)` is Kd in molar units; the loader converts it to nM and the aggregator stores the standardized pKd target. Download it directly into the path expected by the loader:
@@ -255,7 +245,7 @@ Once cached, interaction prediction becomes extremely inexpensive.
 This enables:
 - massive interaction screening
 - virtual proteome-wide searches
-- repeated affinity prediction without recomputing embeddings
+- repeated interaction prediction without recomputing embeddings
 
 ## TODO / Experiments
 ### Fine-Tuning Strategy
@@ -293,10 +283,8 @@ Test:
 
 ### Loss Functions
 - [ ] BCE
-- [ ] MSE
-- [ ] Huber
 - [ ] Contrastive loss
-- [ ] Multi-task weighted losses
+- [ ] Focal loss variants
 
 ## Project Inspiration
 This project builds upon our previous work on **Prot2Prop**, a lightweight framework for multitask protein property prediction using pretrained protein language models.
@@ -322,7 +310,7 @@ However, unlike Prot2Prop, which predicts properties of individual proteins, thi
 - Permutation-invariant pooling
 - Pairwise interaction modeling
 - Cross-group attention mechanisms
-- Multi-task interaction and affinity prediction
+- Interaction classification
 - Complex-level representations
 
 Although the machine learning architecture is substantially different, the overall repository organization and software engineering philosophy will remain intentionally similar to Prot2Prop wherever practical.

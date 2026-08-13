@@ -15,7 +15,6 @@ from config import (
   DROPOUT,
   GROUP_POOL_HIDDEN,
   PAIR_MLP_HIDDEN,
-  REGRESSION_HEAD_HIDDEN,
   RESIDUE_POOL_HIDDEN,
 )
 
@@ -25,12 +24,17 @@ def token_ids_key(input_ids: torch.Tensor) -> str:
   return hashlib.sha256(ids.numpy().tobytes()).hexdigest()
 
 
-def load_backbone_embedding_cache(path, expected_model_name=None):
+def load_backbone_embedding_cache(path, expected_model_name=None, expected_tokenized_cache_path=None):
   payload = torch.load(path, map_location="cpu")
   if expected_model_name is not None and payload.get("model_name") != expected_model_name:
     raise ValueError(
       f"Embedding cache model mismatch: expected {expected_model_name!r}, "
       f"found {payload.get('model_name')!r} in {path}"
+    )
+  if expected_tokenized_cache_path is not None and payload.get("tokenized_cache_path") != str(expected_tokenized_cache_path):
+    raise ValueError(
+      f"Embedding cache tokenized path mismatch: expected {str(expected_tokenized_cache_path)!r}, "
+      f"found {payload.get('tokenized_cache_path')!r} in {path}. Re-run cache_embeddings.py."
     )
   return payload["embeddings"], payload
 
@@ -190,7 +194,6 @@ class MultiTaskGroupPairModel(nn.Module):
     adapter_dim=ADAPTER_DIM,
     dropout=DROPOUT,
     classification_head_hidden=CLASSIFICATION_HEAD_HIDDEN,
-    regression_head_hidden=REGRESSION_HEAD_HIDDEN,
   ):
     super().__init__()
     self.base = base_model
@@ -210,9 +213,7 @@ class MultiTaskGroupPairModel(nn.Module):
     self.heads = nn.ModuleDict()
 
     for task_name in task_order:
-      meta = (task_metas or {}).get(task_name, {})
-      hidden_dim = regression_head_hidden if meta.get("dtype") == "float" else classification_head_hidden
-      self.heads[task_name] = PairTaskHead(PAIR_MLP_HIDDEN, task_output_dims[task_name], hidden_dim, dropout=dropout)
+      self.heads[task_name] = PairTaskHead(PAIR_MLP_HIDDEN, task_output_dims[task_name], classification_head_hidden, dropout=dropout)
 
   def encode_shared_tokens(self, input_ids, attention_mask, precomputed_embeddings=None):
     if precomputed_embeddings is None:
@@ -266,8 +267,8 @@ def unwrap_model(model):
 
 
 def output_dim_from_meta(meta, labels, mask):
-  if meta["dtype"] == "float":
-    return 1
+  if meta["dtype"] != "bool":
+    raise ValueError(f"Unsupported downstream task dtype={meta['dtype']!r}; only classification is enabled.")
   observed = labels[mask]
   if observed.numel() == 0:
     raise ValueError(f"Task '{meta['task_name']}' has no observed labels in train split.")
