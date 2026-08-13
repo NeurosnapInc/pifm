@@ -256,7 +256,6 @@ This enables:
 - [ ] Mean pooling
 - [ ] Max pooling
 - [x] Attention pooling
-- [ ] CLS token (if available)
 - [ ] Learned weighted pooling
 
 ### Group Pooling
