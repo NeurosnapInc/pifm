@@ -4,7 +4,7 @@ pifm.egg-info
 
 # Raw + processed datasets (downloaded locally, never committed)
 data/
-intact_all_2026_07_03.zip
+checkpoints/
 
 # temporary - remove later
 PAPER.md
