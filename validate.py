@@ -23,7 +23,7 @@ from config import (
   DROPOUT,
   EVAL_MAX_TOKENS_PER_BATCH,
   MODEL_NAME,
-  TOKENIZED_DATA_DIR,
+  TRAIN_CACHE_PATH,
   USE_BACKBONE_EMBEDDING_CACHE,
 )
 from model import (
@@ -36,7 +36,7 @@ from model import (
 )
 
 
-DEFAULT_CACHE_PATH = TOKENIZED_DATA_DIR / "multitask_group_pair_prostt5_tokens.pt"
+DEFAULT_CACHE_PATH = TRAIN_CACHE_PATH
 TASK_NAME = "interaction"
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
