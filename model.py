@@ -15,7 +15,6 @@ from config import (
   DROPOUT,
   GROUP_POOL_HIDDEN,
   PAIR_MLP_HIDDEN,
-  RESIDUE_POOL_HIDDEN,
 )
 
 
@@ -168,6 +167,20 @@ class AttentionPool(nn.Module):
     return torch.bmm(attn.unsqueeze(1), x).squeeze(1)
 
 
+class MeanPool(nn.Module):
+  """Average valid token embeddings for each chain, excluding batch padding.
+
+  The tokenizer's existing attention mask defines valid positions, including
+  special tokens. Float32 accumulation keeps mixed-precision sums stable.
+  """
+
+  def forward(self, x, mask):
+    valid = mask.bool().unsqueeze(-1)
+    total = x.float().masked_fill(~valid, 0.0).sum(dim=1)
+    count = valid.sum(dim=1).clamp_min(1)
+    return (total / count).to(dtype=x.dtype)
+
+
 class PairTaskHead(nn.Module):
   def __init__(self, input_dim, output_dim, hidden_dim, dropout=DROPOUT):
     super().__init__()
@@ -202,7 +215,7 @@ class MultiTaskGroupPairModel(nn.Module):
         param.requires_grad = False
 
     self.adapter = Adapter(embed_dim, adapter_dim, dropout_prob=dropout)
-    self.residue_pool = AttentionPool(embed_dim, hidden=RESIDUE_POOL_HIDDEN, dropout=dropout)
+    self.residue_pool = MeanPool()
     self.group_pool = AttentionPool(embed_dim, hidden=GROUP_POOL_HIDDEN, dropout=dropout)
     self.pair_mlp = nn.Sequential(
       nn.LayerNorm(embed_dim * 3),
