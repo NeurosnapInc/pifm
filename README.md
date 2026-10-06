@@ -150,6 +150,35 @@ If `data/tokenized/split_sequence_clusters.tsv` is absent, `tokenize_data.py` wr
 
 Rows whose participating protein clusters would land in different splits are dropped and reported as `dropped_cross_split`. This is intentional: keeping those rows would reintroduce cluster leakage.
 
+## Training & Checkpoint Evaluation
+Train and automatically evaluate the saved best checkpoint on both validation and test:
+
+```bash
+python train.py --validate
+```
+
+Without `--validate`, training still uses validation for checkpoint selection and threshold calibration; it skips the final evaluation of both splits. Test results are never used for checkpoint selection or threshold fitting.
+
+Checkpoint filenames now include the date followed by hours and minutes, for example `checkpoints/prostt5_group_pair_adapter_best_2026-10-06_14-30_seed_1.pt`. Times use the server's local timezone; `config.run_timestamp` records the UTC offset. A numeric suffix prevents overwriting an existing checkpoint saved in the same minute.
+
+Evaluate an existing checkpoint with one command:
+
+```bash
+python validate.py --checkpoint checkpoints/prostt5_group_pair_adapter_best_2026-10-06_14-30_seed_1.pt
+```
+
+This loads the model once, prints validation and test tables, and stores both reports inside the checkpoint at `evaluation["splits"]["validation"]` and `evaluation["splits"]["test"]`. Reports include aggregate classification metrics, source-specific metrics, calibrated metrics when a saved threshold is available, sample counts, evaluation time, and cache path. The checkpoint is updated atomically after evaluation succeeds. `--split validation`, `--split test`, or `--split train` evaluates just that split and preserves other saved results; `--cache` and `--batch-size` remain available. Evaluation applies the saved calibration and never fits a threshold on test data.
+
+Compare saved results without loading ProstT5 or running inference:
+
+```bash
+python summarize_checkpoints.py
+python summarize_checkpoints.py checkpoints/some_checkpoint.pt
+python summarize_checkpoints.py --json
+```
+
+The summary reads weights from `checkpoints/` by default, or from any supplied files/directories. JSON output includes the full stored source-specific reports. Older checkpoints without evaluation results show their training-best validation metrics when available and mark missing test results as `not evaluated`; run `validate.py` to populate both reports.
+
 ## GPU Memory Notes
 On standard 48 GB VRAM GPU instances, PyTorch may fail with a CUDA out-of-memory error even when enough total memory should be available, because a large amount of memory is reserved but unallocated by PyTorch. Set the allocator configuration before launching training or inference:
 

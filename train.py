@@ -2,11 +2,11 @@
 Train the interaction classifier with a frozen ProstT5 backbone and lightweight heads.
 """
 
+import argparse
 import random
 import warnings
 from collections import Counter
-from datetime import date
-from pathlib import Path
+from datetime import datetime
 
 import numpy as np
 import torch
@@ -18,6 +18,7 @@ from tqdm import tqdm
 from transformers import T5EncoderModel, get_linear_schedule_with_warmup
 
 from calibration import fit_posthoc_calibration
+from checkpoint_utils import checkpoint_path, save_checkpoint
 from config import (
   ADAPTER_DIM,
   BACKBONE_EMBEDDING_CACHE_PATH,
@@ -247,6 +248,13 @@ def _collect_predictions(model, loader, task_idx):
   return predictions
 
 
+parser = argparse.ArgumentParser(description="Train the interaction classifier.")
+parser.add_argument(
+  "--validate", action="store_true",
+  help="Evaluate validation and test on the saved best checkpoint and store their results in it.",
+)
+args = parser.parse_args()
+
 warnings.filterwarnings("ignore", message="Online softmax is disabled.*", category=UserWarning)
 
 print("Loading interaction tokenized cache")
@@ -438,11 +446,11 @@ if best_state is not None:
 else:
   calibration = None
 
-Path("checkpoints").mkdir(parents=True, exist_ok=True)
 model_ref = unwrap_model(model)
-run_date = date.today().isoformat()
-out_path = Path(f"./checkpoints/prostt5_group_pair_adapter_best_{run_date}_seed_{TRAINING_SEED}.pt")
-torch.save(
+saved_at = datetime.now().astimezone()
+run_date = saved_at.date().isoformat()
+out_path = checkpoint_path("checkpoints", TRAINING_SEED, saved_at)
+save_checkpoint(
   {
     "adapter_state_dict": model_ref.adapter.state_dict(),
     "residue_pool_state_dict": model_ref.residue_pool.state_dict(),
@@ -468,6 +476,7 @@ torch.save(
       "calibration": calibration,
       "training_seed": TRAINING_SEED,
       "run_date": run_date,
+      "run_timestamp": saved_at.isoformat(timespec="seconds"),
       "best_selection_metric": best_state["selection_metric"] if best_state else None,
       "best_task_report": best_state["task_report"] if best_state else None,
       "classification_selection_metric": CLASSIFICATION_SELECTION_METRIC,
@@ -477,3 +486,11 @@ torch.save(
   out_path,
 )
 print(f"Saved best adapter+head -> {out_path}")
+
+if args.validate:
+  from validate import evaluate_checkpoint
+
+  # Reuse the restored best model and cached data rather than allocate another backbone.
+  evaluate_checkpoint(
+    out_path, TRAIN_CACHE_PATH, model=model_ref, payload=payload, embedding_cache=embedding_cache,
+  )

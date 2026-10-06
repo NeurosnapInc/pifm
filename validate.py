@@ -1,9 +1,11 @@
 """
-Validate a trained interaction checkpoint on a cached split.
+Evaluate validation and test splits and store their metrics inside the checkpoint.
 """
 
 import argparse
 from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
@@ -13,8 +15,8 @@ from transformers import T5EncoderModel
 from calibration import (
   apply_posthoc_calibration,
   classification_report,
-  format_posthoc_classification_rows,
 )
+from checkpoint_utils import save_checkpoint
 from config import (
   ADAPTER_DIM,
   BACKBONE_EMBEDDING_CACHE_PATH,
@@ -125,9 +127,12 @@ def parse_args():
   parser = argparse.ArgumentParser(description="Validate a trained interaction checkpoint.")
   parser.add_argument("--checkpoint", required=True, help="Path to the saved adapter checkpoint.")
   parser.add_argument("--cache", default=str(DEFAULT_CACHE_PATH), help="Path to the tokenized cache.")
-  parser.add_argument("--split", default="validation", choices=["train", "validation", "test"], help="Dataset split to evaluate.")
+  parser.add_argument("--split", default="both", choices=["both", "train", "validation", "test"], help="Evaluate validation and test by default, or select one split.")
   parser.add_argument("--batch-size", type=int, default=BATCH_SIZE, help="Batch size for evaluation.")
-  return parser.parse_args()
+  args = parser.parse_args()
+  if args.batch_size < 1:
+    parser.error("--batch-size must be positive")
+  return args
 
 
 def _load_embedding_cache(model_name, tokenized_cache_path):
@@ -151,36 +156,38 @@ def _load_embedding_cache(model_name, tokenized_cache_path):
   return None
 
 
-def main():
-  args = parse_args()
+def evaluate_checkpoint(checkpoint_path, cache_path=DEFAULT_CACHE_PATH, splits=("validation", "test"), batch_size=BATCH_SIZE,
+                        model=None, payload=None, embedding_cache=None):
+  """Evaluate selected splits, print reports, and atomically persist metrics in the weights file.
+
+  The model, tokenized payload, and embeddings can be reused after training to avoid
+  loading a second backbone into GPU memory. Calibration is read from the checkpoint;
+  evaluation never fits a threshold on the test split. Returns the updated checkpoint.
+  """
+  if batch_size < 1:
+    raise ValueError("batch_size must be positive")
+  splits = tuple(splits)
+  if not splits or any(split not in ("train", "validation", "test") for split in splits):
+    raise ValueError(f"Invalid evaluation splits: {splits!r}")
 
   print("Loading checkpoint and tokenized cache")
-  checkpoint = torch.load(args.checkpoint, map_location="cpu")
-  payload = torch.load(args.cache, map_location="cpu")
+  checkpoint = torch.load(checkpoint_path, map_location="cpu")
+  if payload is None:
+    payload = torch.load(cache_path, map_location="cpu")
 
   task_order = payload["task_order"]
   task_metas = payload["task_metas"]
   if task_order != [TASK_NAME]:
     raise ValueError(f"Expected interaction-only cache, found task_order={task_order!r}. Re-run tokenize_data.py.")
 
-  split_payload = payload["splits"][args.split]
+  for split in splits:
+    if split not in payload["splits"]:
+      raise ValueError(f"Cache is missing split {split!r}")
   train_split = payload["splits"]["train"]
-  pad_token_id = payload["config"]["pad_token_id"]
   task_idx = task_order.index(TASK_NAME)
   model_name = checkpoint["config"].get("model_name", MODEL_NAME)
-  embedding_cache = _load_embedding_cache(model_name, args.cache)
-
-  dataset = MultiTaskGroupPairDataset(split_payload, embedding_cache=embedding_cache)
-  loader = DataLoader(
-    dataset,
-    batch_sampler=MultiTaskBatchSampler(
-      dataset,
-      args.batch_size,
-      max_tokens_per_batch=EVAL_MAX_TOKENS_PER_BATCH,
-    ),
-    collate_fn=lambda batch: collate_multitask_batch(batch, pad_token_id, include_sources=True),
-    pin_memory=PIN_MEMORY,
-  )
+  if model is None:
+    embedding_cache = _load_embedding_cache(model_name, cache_path)
 
   train_mask = train_split["label_mask"][:, task_idx]
   train_labels = train_split["raw_labels"][:, task_idx]
@@ -188,32 +195,67 @@ def main():
     TASK_NAME: output_dim_from_meta(task_metas[TASK_NAME], train_labels, train_mask),
   }
 
-  embed_dim = checkpoint["config"]["embed_dim"]
-  if embedding_cache is None:
-    base_model = T5EncoderModel.from_pretrained(model_name).to(DEVICE)
-    if DEVICE.type == "cuda":
-      base_model.bfloat16()
-  else:
-    base_model = None
+  if model is None:
+    embed_dim = checkpoint["config"]["embed_dim"]
+    if embedding_cache is None:
+      base_model = T5EncoderModel.from_pretrained(model_name).to(DEVICE)
+      if DEVICE.type == "cuda":
+        base_model.bfloat16()
+    else:
+      base_model = None
 
-  model = MultiTaskGroupPairModel(
-    base_model,
-    task_order,
-    task_output_dims,
-    embed_dim=embed_dim,
-    task_metas=task_metas,
-    adapter_dim=checkpoint["config"].get("adapter_dim", ADAPTER_DIM),
-    dropout=checkpoint["config"].get("dropout", DROPOUT),
-    classification_head_hidden=checkpoint["config"].get("classification_head_hidden", CLASSIFICATION_HEAD_HIDDEN),
-  ).to(DEVICE)
+    model = MultiTaskGroupPairModel(
+      base_model,
+      task_order,
+      task_output_dims,
+      embed_dim=embed_dim,
+      task_metas=task_metas,
+      adapter_dim=checkpoint["config"].get("adapter_dim", ADAPTER_DIM),
+      dropout=checkpoint["config"].get("dropout", DROPOUT),
+      classification_head_hidden=checkpoint["config"].get("classification_head_hidden", CLASSIFICATION_HEAD_HIDDEN),
+    ).to(DEVICE)
 
-  model.adapter.load_state_dict(checkpoint["adapter_state_dict"])
-  model.residue_pool.load_state_dict(checkpoint["residue_pool_state_dict"])
-  model.group_pool.load_state_dict(checkpoint["group_pool_state_dict"])
-  model.pair_mlp.load_state_dict(checkpoint["pair_mlp_state_dict"])
-  for task_name, state_dict in checkpoint["head_state_dicts"].items():
-    model.heads[task_name].load_state_dict(state_dict)
+    model.adapter.load_state_dict(checkpoint["adapter_state_dict"])
+    model.residue_pool.load_state_dict(checkpoint["residue_pool_state_dict"])
+    model.group_pool.load_state_dict(checkpoint["group_pool_state_dict"])
+    model.pair_mlp.load_state_dict(checkpoint["pair_mlp_state_dict"])
+    for task_name, state_dict in checkpoint["head_state_dicts"].items():
+      model.heads[task_name].load_state_dict(state_dict)
   model.eval()
+
+  # Keep previous split reports when a caller explicitly evaluates only one split.
+  evaluation = dict(checkpoint.get("evaluation", {}))
+  evaluation["schema_version"] = 1
+  split_results = dict(evaluation.get("splits", {}))
+  for split in splits:
+    split_results[split] = _evaluate_split(
+      model, payload, embedding_cache, checkpoint, checkpoint_path, cache_path, split, batch_size,
+    )
+  evaluation["splits"] = split_results
+  checkpoint["evaluation"] = evaluation
+  # Write only once both splits succeed, so a failed run leaves the weights intact.
+  save_checkpoint(checkpoint, checkpoint_path)
+  print(f"Saved evaluation results -> {checkpoint_path}")
+  return checkpoint
+
+
+def _evaluate_split(model, payload, embedding_cache, checkpoint, checkpoint_path, cache_path, split, batch_size):
+  """Collect aggregate, source-specific, and checkpoint-calibrated metrics for one split."""
+  split_payload = payload["splits"][split]
+  pad_token_id = payload["config"]["pad_token_id"]
+  task_metas = payload["task_metas"]
+  task_idx = payload["task_order"].index(TASK_NAME)
+  dataset = MultiTaskGroupPairDataset(split_payload, embedding_cache=embedding_cache)
+  loader = DataLoader(
+    dataset,
+    batch_sampler=MultiTaskBatchSampler(
+      dataset,
+      batch_size,
+      max_tokens_per_batch=EVAL_MAX_TOKENS_PER_BATCH,
+    ),
+    collate_fn=lambda batch: collate_multitask_batch(batch, pad_token_id, include_sources=True),
+    pin_memory=PIN_MEMORY,
+  )
 
   predictions = {
     TASK_NAME: {
@@ -224,9 +266,9 @@ def main():
     }
   }
 
-  print(f"Running evaluation on split='{args.split}'")
+  print(f"Running evaluation on split='{split}'")
   with torch.no_grad():
-    for batch in tqdm(loader, desc="Validate"):
+    for batch in tqdm(loader, desc=f"Evaluate {split}"):
       input_ids, input_embeddings, attn_mask, chain_to_sample, chain_to_group, raw_labels, normalized_labels, label_mask, sources = batch
       if input_ids is not None:
         input_ids = input_ids.to(DEVICE, non_blocking=PIN_MEMORY)
@@ -266,9 +308,9 @@ def main():
       )
 
   print()
-  print(f"Dataset size ({args.split}): {len(dataset)} pairs")
-  print(f"Checkpoint: {args.checkpoint}")
-  print(f"Cache: {args.cache}")
+  print(f"Dataset size ({split}): {len(dataset)} pairs")
+  print(f"Checkpoint: {checkpoint_path}")
+  print(f"Cache: {cache_path}")
   print()
 
   report = classification_report(
@@ -284,12 +326,24 @@ def main():
     )
   )
 
+  result = {
+    "evaluated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+    "cache_path": str(Path(cache_path).resolve()),
+    "batch_size": batch_size,
+    "max_tokens_per_batch": EVAL_MAX_TOKENS_PER_BATCH,
+    "dataset_size": len(dataset),
+    "classification": {TASK_NAME: {"n": len(predictions[TASK_NAME]["labels"]), **report}},
+    "by_source": {},
+    "calibrated_classification": {},
+  }
+
   source_rows = []
   for source, source_values in sorted(predictions[TASK_NAME]["by_source"].items()):
     labels = source_values["labels"]
     if not labels:
       continue
     source_report = classification_report(labels, source_values["preds"], source_values["scores"])
+    result["by_source"][source] = {TASK_NAME: {"n": len(labels), **source_report}}
     source_rows.append(_classification_row(TASK_NAME, len(labels), source_report, prefix=source))
 
   print(
@@ -312,6 +366,13 @@ def main():
         calibrated_predictions[TASK_NAME]["preds"],
         calibrated_predictions[TASK_NAME]["scores"],
       )
+      result["calibrated_classification"][TASK_NAME] = {
+        "n": len(predictions[TASK_NAME]["labels"]),
+        "threshold": classification_params[TASK_NAME]["threshold"],
+        "calibration_size": classification_params[TASK_NAME]["calibration_size"],
+        "calibration_split": checkpoint_calibration.get("source_split", "validation"),
+        **calibrated_report,
+      }
       checkpoint_rows.append(
         [
           TASK_NAME,
@@ -347,18 +408,13 @@ def main():
         checkpoint_rows,
       )
     )
-  else:
-    print(
-      _format_table(
-        "Post-hoc Classification Threshold Tuning (fit on internal half, report on held-out half)",
-        [
-          "task", "cal_n", "rep_n", "thr", "acc", "bal_acc", "precision", "recall",
-          "specificity", "neg_recall", "f1", "mcc", "tn", "fp", "fn", "tp", "auroc",
-          "auprc", "label_ratio", "pred_ratio",
-        ],
-        format_posthoc_classification_rows(predictions, task_metas),
-      )
-    )
+  return result
+
+
+def main():
+  args = parse_args()
+  splits = ("validation", "test") if args.split == "both" else (args.split,)
+  evaluate_checkpoint(args.checkpoint, args.cache, splits=splits, batch_size=args.batch_size)
 
 
 if __name__ == "__main__":

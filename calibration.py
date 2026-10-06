@@ -92,6 +92,8 @@ def _binary_confusion_counts(labels, preds):
 
 
 def _binary_average_precision(labels, scores):
+  if not labels:
+    return None
   if len(set(labels)) < 2:
     if all(label == 1 for label in labels):
       return 1.0
@@ -120,7 +122,7 @@ def classification_report(labels, preds, scores):
     "recall": positive_recall,
     "specificity": specificity,
     "negative_recall": specificity,
-    "f1": f1_score(labels, preds, zero_division=0),
+    "f1": f1_score(labels, preds, zero_division=0) if total else None,
     "mcc": matthews_corrcoef(labels, preds) if len(set(labels)) >= 2 and len(set(preds)) >= 2 else 0.0,
     "tn": tn,
     "fp": fp,
