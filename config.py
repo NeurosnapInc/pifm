@@ -3,6 +3,7 @@ from pathlib import Path
 ### Backbone
 MODEL_NAME = "Rostlab/ProstT5"
 GLOBAL_SEED = 1
+RUNS_DIR = Path("runs")
 
 ### Aggregation
 AGGREGATED_DB_PATH = Path("data/aggregated/aggregated.duckdb")

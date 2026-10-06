@@ -1,0 +1,42 @@
+{
+  "embed_dim": 1024,
+  "adapter_dim": 64,
+  "dropout": 0.1,
+  "classification_head_hidden": 256,
+  "model_name": "Rostlab/ProstT5",
+  "tokenized_data_path": "data/tokenized/interaction_group_pair_prostt5_tokens.pt",
+  "task_names": [
+    "interaction"
+  ],
+  "task_metas": {
+    "interaction": {
+      "task_name": "interaction",
+      "dtype": "bool",
+      "head_type": "pair_binary",
+      "num_classes": 2,
+      "loss": "ce"
+    }
+  },
+  "task_output_dims": {
+    "interaction": 2
+  },
+  "interaction_loss": "focal",
+  "focal_gamma": 2.0,
+  "interaction_pos_neg_ratio": 5.0,
+  "source_balanced_sampling": true,
+  "used_backbone_embedding_cache": true,
+  "backbone_embedding_cache_path": "data/tokenized/interaction_prostt5_backbone_embeddings.pt",
+  "calibration": {
+    "source_split": "validation",
+    "classification": {
+      "interaction": {
+        "threshold": 0.4,
+        "calibration_size": 1614
+      }
+    }
+  },
+  "training_seed": 1,
+  "run_date": "2026-08-13",
+  "classification_selection_metric": "auroc",
+  "min_classification_val_labels": 100
+}

@@ -18,7 +18,8 @@ from tqdm import tqdm
 from transformers import T5EncoderModel, get_linear_schedule_with_warmup
 
 from calibration import fit_posthoc_calibration
-from checkpoint_utils import checkpoint_path, save_checkpoint
+from run_utils import create_run_directory, git_revision, save_run
+import config as run_configuration
 from config import (
   ADAPTER_DIM,
   BACKBONE_EMBEDDING_CACHE_PATH,
@@ -36,6 +37,7 @@ from config import (
   MIN_CLASSIFICATION_VAL_LABELS,
   MODEL_NAME,
   PATIENCE,
+  RUNS_DIR,
   SOURCE_BALANCED_SAMPLING,
   TRAIN_CACHE_PATH,
   TRAIN_MAX_TOKENS_PER_BATCH,
@@ -251,7 +253,7 @@ def _collect_predictions(model, loader, task_idx):
 parser = argparse.ArgumentParser(description="Train the interaction classifier.")
 parser.add_argument(
   "--validate", action="store_true",
-  help="Evaluate validation and test on the saved best checkpoint and store their results in it.",
+  help="Evaluate validation and test on the saved best model and update the run's metrics.json.",
 )
 args = parser.parse_args()
 
@@ -449,8 +451,8 @@ else:
 model_ref = unwrap_model(model)
 saved_at = datetime.now().astimezone()
 run_date = saved_at.date().isoformat()
-out_path = checkpoint_path("checkpoints", TRAINING_SEED, saved_at)
-save_checkpoint(
+run_dir = create_run_directory(RUNS_DIR, TRAINING_SEED, saved_at)
+save_run(
   {
     "adapter_state_dict": model_ref.adapter.state_dict(),
     "residue_pool_state_dict": model_ref.residue_pool.state_dict(),
@@ -458,6 +460,8 @@ save_checkpoint(
     "pair_mlp_state_dict": model_ref.pair_mlp.state_dict(),
     "head_state_dicts": {task_name: head.state_dict() for task_name, head in model_ref.heads.items()},
     "config": {
+      "git_commit": git_revision(),
+      "settings": {name: value for name, value in vars(run_configuration).items() if name.isupper()},
       "embed_dim": embed_dim,
       "adapter_dim": ADAPTER_DIM,
       "dropout": DROPOUT,
@@ -483,14 +487,15 @@ save_checkpoint(
       "min_classification_val_labels": MIN_CLASSIFICATION_VAL_LABELS,
     },
   },
-  out_path,
+  run_dir,
+  notes=f"# Run {run_dir.name}\n\nInteraction-only training with a frozen ProstT5 backbone and adapters.\n",
 )
-print(f"Saved best adapter+head -> {out_path}")
+print(f"Saved run -> {run_dir}")
 
 if args.validate:
-  from validate import evaluate_checkpoint
+  from validate import evaluate_run
 
   # Reuse the restored best model and cached data rather than allocate another backbone.
-  evaluate_checkpoint(
-    out_path, TRAIN_CACHE_PATH, model=model_ref, payload=payload, embedding_cache=embedding_cache,
+  evaluate_run(
+    run_dir, TRAIN_CACHE_PATH, model=model_ref, payload=payload, embedding_cache=embedding_cache,
   )

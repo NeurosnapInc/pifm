@@ -1,5 +1,5 @@
 """
-Evaluate validation and test splits and store their metrics inside the checkpoint.
+Evaluate validation and test splits and update the run's metrics.json.
 """
 
 import argparse
@@ -16,7 +16,7 @@ from calibration import (
   apply_posthoc_calibration,
   classification_report,
 )
-from checkpoint_utils import save_checkpoint
+from run_utils import load_run, save_json
 from config import (
   ADAPTER_DIM,
   BACKBONE_EMBEDDING_CACHE_PATH,
@@ -125,7 +125,7 @@ CLASSIFICATION_COLUMNS = [
 
 def parse_args():
   parser = argparse.ArgumentParser(description="Validate a trained interaction checkpoint.")
-  parser.add_argument("--checkpoint", required=True, help="Path to the saved adapter checkpoint.")
+  parser.add_argument("--run", "--checkpoint", dest="run", required=True, help="Run directory or its checkpoint.pt file.")
   parser.add_argument("--cache", default=str(DEFAULT_CACHE_PATH), help="Path to the tokenized cache.")
   parser.add_argument("--split", default="both", choices=["both", "train", "validation", "test"], help="Evaluate validation and test by default, or select one split.")
   parser.add_argument("--batch-size", type=int, default=BATCH_SIZE, help="Batch size for evaluation.")
@@ -156,13 +156,13 @@ def _load_embedding_cache(model_name, tokenized_cache_path):
   return None
 
 
-def evaluate_checkpoint(checkpoint_path, cache_path=DEFAULT_CACHE_PATH, splits=("validation", "test"), batch_size=BATCH_SIZE,
+def evaluate_run(run_path, cache_path=DEFAULT_CACHE_PATH, splits=("validation", "test"), batch_size=BATCH_SIZE,
                         model=None, payload=None, embedding_cache=None):
-  """Evaluate selected splits, print reports, and atomically persist metrics in the weights file.
+  """Evaluate selected splits and atomically update metrics.json without rewriting weights.
 
   The model, tokenized payload, and embeddings can be reused after training to avoid
   loading a second backbone into GPU memory. Calibration is read from the checkpoint;
-  evaluation never fits a threshold on the test split. Returns the updated checkpoint.
+  evaluation never fits a threshold on the test split. Returns the updated metrics.
   """
   if batch_size < 1:
     raise ValueError("batch_size must be positive")
@@ -171,7 +171,7 @@ def evaluate_checkpoint(checkpoint_path, cache_path=DEFAULT_CACHE_PATH, splits=(
     raise ValueError(f"Invalid evaluation splits: {splits!r}")
 
   print("Loading checkpoint and tokenized cache")
-  checkpoint = torch.load(checkpoint_path, map_location="cpu")
+  run_dir, checkpoint = load_run(run_path)
   if payload is None:
     payload = torch.load(cache_path, map_location="cpu")
 
@@ -179,6 +179,8 @@ def evaluate_checkpoint(checkpoint_path, cache_path=DEFAULT_CACHE_PATH, splits=(
   task_metas = payload["task_metas"]
   if task_order != [TASK_NAME]:
     raise ValueError(f"Expected interaction-only cache, found task_order={task_order!r}. Re-run tokenize_data.py.")
+  if checkpoint["config"].get("task_names", task_order) != task_order:
+    raise ValueError("This run has a legacy multitask model. Current evaluation supports interaction-only runs.")
 
   for split in splits:
     if split not in payload["splits"]:
@@ -229,18 +231,17 @@ def evaluate_checkpoint(checkpoint_path, cache_path=DEFAULT_CACHE_PATH, splits=(
   split_results = dict(evaluation.get("splits", {}))
   for split in splits:
     result = _evaluate_split(
-      model, payload, embedding_cache, checkpoint, checkpoint_path, cache_path, split, batch_size,
+      model, payload, embedding_cache, checkpoint, run_dir / "checkpoint.pt", cache_path, split, batch_size,
     )
     historical = split_results.get(split, {}).get("historical_reports")
     if historical:
       result["historical_reports"] = historical
     split_results[split] = result
   evaluation["splits"] = split_results
-  checkpoint["evaluation"] = evaluation
-  # Write only once both splits succeed, so a failed run leaves the weights intact.
-  save_checkpoint(checkpoint, checkpoint_path)
-  print(f"Saved evaluation results -> {checkpoint_path}")
-  return checkpoint
+  # Write only once both splits succeed; weights and configuration remain untouched.
+  save_json(evaluation, run_dir / "metrics.json")
+  print(f"Saved evaluation results -> {run_dir / 'metrics.json'}")
+  return evaluation
 
 
 def _evaluate_split(model, payload, embedding_cache, checkpoint, checkpoint_path, cache_path, split, batch_size):
@@ -418,7 +419,7 @@ def _evaluate_split(model, payload, embedding_cache, checkpoint, checkpoint_path
 def main():
   args = parse_args()
   splits = ("validation", "test") if args.split == "both" else (args.split,)
-  evaluate_checkpoint(args.checkpoint, args.cache, splits=splits, batch_size=args.batch_size)
+  evaluate_run(args.run, args.cache, splits=splits, batch_size=args.batch_size)
 
 
 if __name__ == "__main__":

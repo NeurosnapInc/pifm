@@ -1,0 +1,120 @@
+{
+  "embed_dim": 1024,
+  "adapter_dim": 64,
+  "dropout": 0.1,
+  "classification_head_hidden": 256,
+  "regression_head_hidden": 512,
+  "model_name": "Rostlab/ProstT5",
+  "tokenized_data_path": "data/tokenized/multitask_group_pair_prostt5_tokens.pt",
+  "task_names": [
+    "interaction",
+    "affinity"
+  ],
+  "task_metas": {
+    "interaction": {
+      "task_name": "interaction",
+      "dtype": "bool",
+      "head_type": "pair_binary",
+      "num_classes": 2,
+      "loss": "ce"
+    },
+    "affinity": {
+      "task_name": "affinity",
+      "dtype": "float",
+      "head_type": "pair_regression",
+      "num_classes": null,
+      "loss": "mse"
+    }
+  },
+  "task_output_dims": {
+    "interaction": 2,
+    "affinity": 1
+  },
+  "regression_mean": [
+    0.0,
+    7.819456100463867
+  ],
+  "regression_std": [
+    1.0,
+    2.0973687171936035
+  ],
+  "regression_loss": "huber",
+  "regression_huber_delta": 1.0,
+  "affinity_normalization": "source",
+  "min_source_affinity_labels": 20,
+  "source_regression_stats": {
+    "affinity": {
+      "ppb_affinity": {
+        "mean": 7.9555840492248535,
+        "std": 2.0712738037109375,
+        "n": 6275
+      },
+      "skempi": {
+        "mean": 7.528812408447266,
+        "std": 2.1230101585388184,
+        "n": 2939
+      },
+      "__global__": {
+        "mean": 7.819456100463867,
+        "std": 2.0973687171936035,
+        "n": 9214
+      }
+    }
+  },
+  "interaction_loss": "focal",
+  "focal_gamma": 2.0,
+  "interaction_pos_neg_ratio": 5.0,
+  "source_balanced_sampling": true,
+  "calibration": {
+    "source_split": "validation",
+    "classification": {
+      "interaction": {
+        "threshold": 0.07,
+        "calibration_size": 1611
+      }
+    },
+    "regression": {
+      "affinity": {
+        "slope": 0.6438754796981812,
+        "intercept": 2.2642464637756348,
+        "calibration_size": 1042
+      }
+    }
+  },
+  "training_seed": 1,
+  "run_date": "2026-07-18",
+  "best_aggregate_score": 0.06332144850941102,
+  "best_task_reports": {
+    "interaction": {
+      "metric_name": "f1",
+      "metric_value": 0.9486813970064149,
+      "selection_metric": 0.8909979423868313,
+      "selection_metric_name": "auroc",
+      "report": {
+        "acc": 0.9106145251396648,
+        "balanced_accuracy": 0.7918757467144564,
+        "specificity": 0.6296296296296297,
+        "negative_recall": 0.6296296296296297,
+        "mcc": 0.6032029812581888,
+        "f1": 0.9486813970064149,
+        "auroc": 0.8909979423868313
+      }
+    },
+    "affinity": {
+      "metric_name": "mae",
+      "metric_value": 1.5925208014398526,
+      "selection_metric": -0.7643550453680092,
+      "selection_metric_name": "negative_normalized_mae",
+      "report": {
+        "mae": 1.5925208014398526,
+        "rmse": 1.956409435378534,
+        "normalized_mae": 0.7643550453680092,
+        "pearson": 0.2878739799677873
+      }
+    }
+  },
+  "classification_selection_metric": "auroc",
+  "regression_selection_metric": "normalized_mae",
+  "min_classification_val_labels": 100,
+  "min_regression_val_labels": 100
+}

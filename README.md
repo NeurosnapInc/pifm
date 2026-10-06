@@ -150,34 +150,60 @@ If `data/tokenized/split_sequence_clusters.tsv` is absent, `tokenize_data.py` wr
 
 Rows whose participating protein clusters would land in different splits are dropped and reported as `dropped_cross_split`. This is intentional: keeping those rows would reintroduce cluster leakage.
 
-## Training & Checkpoint Evaluation
-Train and automatically evaluate the saved best checkpoint on both validation and test:
+## Training & Run Evaluation
+Each training run has its own directory:
+
+```text
+runs/2026-10-06_14-30_seed_1/
+  checkpoint.pt
+  config.json
+  metrics.json
+  notes.md
+```
+
+`checkpoint.pt` contains model weights only. `config.json` records model/training configuration and the validation-fitted calibration threshold. `metrics.json` stores checkpoint-selection metrics under `training` and evaluation reports under `splits.validation` and `splits.test`. `notes.md` holds experiment context and conclusions.
+
+Train and automatically evaluate the saved best model on both validation and test:
 
 ```bash
 python train.py --validate
 ```
 
-Without `--validate`, training still uses validation for checkpoint selection and threshold calibration; it skips the final evaluation of both splits. Test results are never used for checkpoint selection or threshold fitting.
+Without `--validate`, training still uses validation for checkpoint selection and calibration but skips final evaluation of both splits. Test results are never used for checkpoint selection or threshold fitting.
 
-Checkpoint filenames now include the date followed by hours and minutes, for example `checkpoints/prostt5_group_pair_adapter_best_2026-10-06_14-30_seed_1.pt`. Times use the server's local timezone; `config.run_timestamp` records the UTC offset. A numeric suffix prevents overwriting an existing checkpoint saved in the same minute.
+New run names include date, hours/minutes, and seed. Times use the server's local timezone; `config.json` records the timestamp and UTC offset. A numeric suffix distinguishes runs created within the same minute.
 
-Evaluate an existing checkpoint with one command:
-
-```bash
-python validate.py --checkpoint checkpoints/prostt5_group_pair_adapter_best_2026-10-06_14-30_seed_1.pt
-```
-
-This loads the model once, prints validation and test tables, and stores both reports inside the checkpoint at `evaluation["splits"]["validation"]` and `evaluation["splits"]["test"]`. Reports include aggregate classification metrics, source-specific metrics, calibrated metrics when a saved threshold is available, sample counts, evaluation time, and cache path. The checkpoint is updated atomically after evaluation succeeds. `--split validation`, `--split test`, or `--split train` evaluates just that split and preserves other saved results; `--cache` and `--batch-size` remain available. Evaluation applies the saved calibration and never fits a threshold on test data.
-
-Compare saved results without loading ProstT5 or running inference:
+Evaluate an existing interaction-only run:
 
 ```bash
-python summarize_checkpoints.py
-python summarize_checkpoints.py checkpoints/some_checkpoint.pt
-python summarize_checkpoints.py --json
+python validate.py --run runs/2026-10-06_14-30_seed_1
 ```
 
-The summary reads weights from `checkpoints/` by default, or from any supplied files/directories. JSON output includes the full stored source-specific reports. Older checkpoints without evaluation results show their training-best validation metrics when available and mark missing test results as `not evaluated`; run `validate.py` to populate both reports.
+This loads the model once, prints both split tables, and atomically updates only `metrics.json`. Weights, configuration, notes, and historical archives remain intact. `--split validation`, `--split test`, or `--split train` evaluates just that split and preserves the other reports. `--cache` and `--batch-size` remain available. `--checkpoint runs/<run>/checkpoint.pt` is an alias for `--run`.
+
+Compare runs without importing torch, loading weights, or running inference:
+
+```bash
+python summarize_runs.py
+python summarize_runs.py runs/2026-08-13_seed_1
+python summarize_runs.py --json
+python summarize_runs.py --historical
+```
+
+The summary reads JSON sidecars from `runs/` by default, or from supplied run directories/root directories. JSON output includes all source-specific and historical metrics; `--historical` prints archived tables and notes. Missing results are shown as `not evaluated`. Historical multitask runs retain their original reports; current evaluation supports interaction-only models.
+
+### Migrating Older Checkpoints
+Migrate checkpoints on another machine using:
+
+```bash
+python migrate_checkpoints.py
+# Optionally remove the originals only after verifying the migrated artifacts:
+python migrate_checkpoints.py --move
+```
+
+The migration separates embedded configuration, metrics, and archived result notes into sidecars, verifies every weight tensor and metadata field, and refuses to overwrite a conflicting run. It can be repeated safely against matching artifacts. Legacy checkpoints without a reliable save time use date-only run names such as `runs/2026-08-13_seed_1/`.
+
+Run metadata and notes are version-controlled; `checkpoint.pt` is git-ignored. Transfer the entire run directory when copying a model between machines.
 
 ## GPU Memory Notes
 On standard 48 GB VRAM GPU instances, PyTorch may fail with a CUDA out-of-memory error even when enough total memory should be available, because a large amount of memory is reserved but unallocated by PyTorch. Set the allocator configuration before launching training or inference:
@@ -344,7 +370,7 @@ Although the machine learning architecture is substantially different, the overa
 
 
 ## Train Log
-All historical result tables are stored inside their corresponding local checkpoints. Use `python summarize_checkpoints.py` to compare runs, `--historical` to print archived tables and original result notes, or `--json` to inspect the full metadata. Compatible classification reports use the current evaluation fields; older classification and regression tables live in each split's `historical_reports`, with original columns, structured rows, and verbatim tables. Imported reports retain published four-decimal precision and README provenance; missing or undefined values are stored as null, with their original spelling preserved in the verbatim tables. Historical metrics are never recomputed under newer definitions. Re-evaluation preserves these archives.
+All historical result tables are stored in each run\'s `metrics.json`; original result notes live in `notes.md`. Use `python summarize_runs.py` to compare runs, `--historical` to print archived tables and notes, or `--json` to inspect all metadata. Compatible classification reports use the current evaluation fields; older classification and regression tables live in each split\'s `historical_reports`, with original columns, structured rows, and verbatim tables. Imported reports retain published four-decimal precision and README provenance. Undefined values are null, with original spelling preserved in verbatim tables. Historical definitions remain unchanged, and re-evaluation preserves the archives.
 
 ### Version 2026-07-13
 #### Changes
@@ -358,10 +384,10 @@ All historical result tables are stored inside their corresponding local checkpo
 - Validation affinity had moderate signal, while the interaction head still predicted almost everything as positive.
 
 #### Validation Split
-Results are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-07-13_seed_1.pt) under `evaluation["splits"]["validation"]`. Historical tables are preserved in `historical_reports`.
+Results are stored in [metrics.json](runs/2026-07-13_seed_1/metrics.json) under `["splits"]["validation"]`. Historical tables are preserved in `historical_reports`.
 
 #### Test Split
-Results are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-07-13_seed_1.pt) under `evaluation["splits"]["test"]`. Historical tables are preserved in `historical_reports`.
+Results are stored in [metrics.json](runs/2026-07-13_seed_1/metrics.json) under `["splits"]["test"]`. Historical tables are preserved in `historical_reports`.
 
 ### Version 2026-07-18
 #### Changes
@@ -375,10 +401,10 @@ Results are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_be
 - Negative-aware training improved interaction classification and Negatome handling. Source-normalized affinity training remained weak; retain the interaction changes and revisit affinity modeling.
 
 #### Validation Split
-Results are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-07-18_seed_1.pt) under `evaluation["splits"]["validation"]`. Historical tables are preserved in `historical_reports`.
+Results are stored in [metrics.json](runs/2026-07-18_seed_1/metrics.json) under `["splits"]["validation"]`. Historical tables are preserved in `historical_reports`.
 
 #### Test Split
-Results are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-07-18_seed_1.pt) under `evaluation["splits"]["test"]`. Historical tables are preserved in `historical_reports`.
+Results are stored in [metrics.json](runs/2026-07-18_seed_1/metrics.json) under `["splits"]["test"]`. Historical tables are preserved in `historical_reports`.
 
 ### Version 2026-07-19
 #### Changes
@@ -390,10 +416,10 @@ Results are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_be
 - Interaction classification improved with calibrated thresholding. Global affinity normalization did not recover test performance; separate source-specific modeling or data/split investigation was needed.
 
 #### Validation Split
-Results are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-07-19_seed_1.pt) under `evaluation["splits"]["validation"]`. Historical tables are preserved in `historical_reports`.
+Results are stored in [metrics.json](runs/2026-07-19_seed_1/metrics.json) under `["splits"]["validation"]`. Historical tables are preserved in `historical_reports`.
 
 #### Test Split
-Results are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-07-19_seed_1.pt) under `evaluation["splits"]["test"]`. Historical tables are preserved in `historical_reports`.
+Results are stored in [metrics.json](runs/2026-07-19_seed_1/metrics.json) under `["splits"]["test"]`. Historical tables are preserved in `historical_reports`.
 
 ### Version 2026-08-12
 #### Changes
@@ -426,10 +452,10 @@ python train.py
 - Interaction performance remained strong. Separate affinity heads helped SKEMPI on validation but failed to generalize on test; PPB-Affinity remained weak.
 
 #### Validation Split
-Results are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-08-12_seed_1.pt) under `evaluation["splits"]["validation"]`. Historical tables are preserved in `historical_reports`.
+Results are stored in [metrics.json](runs/2026-08-12_seed_1/metrics.json) under `["splits"]["validation"]`. Historical tables are preserved in `historical_reports`.
 
 #### Test Split
-Results are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-08-12_seed_1.pt) under `evaluation["splits"]["test"]`. Historical tables are preserved in `historical_reports`.
+Results are stored in [metrics.json](runs/2026-08-12_seed_1/metrics.json) under `["splits"]["test"]`. Historical tables are preserved in `historical_reports`.
 
 ### Version 2026-08-13
 #### Changes
@@ -460,7 +486,7 @@ python train.py
 - Main readout: removing affinity simplifies the code and creates the intended clean baseline, but the interaction-only run has worse test negative recall than the previous setup. The next pooling ablations should be compared against this baseline, not assumed to improve it.
 
 #### Validation Split
-Classification metrics are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-08-13_seed_1.pt) under `evaluation["splits"]["validation"]`.
+Classification metrics are stored in [metrics.json](runs/2026-08-13_seed_1/metrics.json) under `["splits"]["validation"]`.
 
 #### Test Split
-Classification metrics are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-08-13_seed_1.pt) under `evaluation["splits"]["test"]`.
+Classification metrics are stored in [metrics.json](runs/2026-08-13_seed_1/metrics.json) under `["splits"]["test"]`.

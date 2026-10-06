@@ -1,0 +1,81 @@
+{
+  "embed_dim": 1024,
+  "adapter_dim": 64,
+  "dropout": 0.1,
+  "classification_head_hidden": 256,
+  "regression_head_hidden": 512,
+  "model_name": "Rostlab/ProstT5",
+  "tokenized_data_path": "data/tokenized/multitask_group_pair_prostt5_tokens.pt",
+  "task_names": [
+    "interaction",
+    "affinity"
+  ],
+  "task_metas": {
+    "interaction": {
+      "task_name": "interaction",
+      "dtype": "bool",
+      "head_type": "pair_binary",
+      "num_classes": 2,
+      "loss": "ce"
+    },
+    "affinity": {
+      "task_name": "affinity",
+      "dtype": "float",
+      "head_type": "pair_regression",
+      "num_classes": null,
+      "loss": "mse"
+    }
+  },
+  "task_output_dims": {
+    "interaction": 2,
+    "affinity": 1
+  },
+  "regression_mean": [
+    0.0,
+    7.536307334899902
+  ],
+  "regression_std": [
+    1.0,
+    1.8991363048553467
+  ],
+  "calibration": {
+    "source_split": "validation",
+    "classification": {
+      "interaction": {
+        "threshold": 0.79,
+        "calibration_size": 2622
+      }
+    },
+    "regression": {
+      "affinity": {
+        "slope": 0.5514320731163025,
+        "intercept": 4.215389251708984,
+        "calibration_size": 10
+      }
+    }
+  },
+  "training_seed": 1,
+  "run_date": "2026-07-11",
+  "best_aggregate_score": 0.12277404093053695,
+  "best_task_reports": {
+    "interaction": {
+      "metric_name": "f1",
+      "metric_value": 0.9849814706456017,
+      "selection_metric": 0.9849814706456017,
+      "report": {
+        "acc": 0.9706331045003814,
+        "f1": 0.9849814706456017
+      }
+    },
+    "affinity": {
+      "metric_name": "mae",
+      "metric_value": 1.404284906387329,
+      "selection_metric": -0.7394333887845278,
+      "report": {
+        "mae": 1.404284906387329,
+        "rmse": 1.9663306330844335,
+        "normalized_mae": 0.7394333887845278
+      }
+    }
+  }
+}

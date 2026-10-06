@@ -1,0 +1,786 @@
+{
+  "schema_version": 1,
+  "splits": {
+    "validation": {
+      "evaluated_at": null,
+      "cache_path": "data/tokenized/multitask_group_pair_prostt5_tokens.pt",
+      "dataset_size": 1611,
+      "classification": {
+        "interaction": {
+          "n": 1611,
+          "acc": 0.9112,
+          "balanced_acc": 0.8274,
+          "precision": 0.9549,
+          "recall": 0.9419,
+          "specificity": 0.713,
+          "negative_recall": 0.713,
+          "f1": 0.9484,
+          "mcc": 0.6322,
+          "tn": 154,
+          "fp": 62,
+          "fn": 81,
+          "tp": 1314,
+          "auroc": 0.9387,
+          "auprc": 0.9893,
+          "label_ratio": "0:0.134 1:0.866",
+          "pred_ratio": "0:0.146 1:0.854"
+        }
+      },
+      "by_source": {
+        "intact_negative": {
+          "interaction": {
+            "n": 1,
+            "acc": 1.0,
+            "balanced_acc": 0.5,
+            "precision": 0.0,
+            "recall": 0.0,
+            "specificity": 1.0,
+            "negative_recall": 1.0,
+            "f1": 0.0,
+            "mcc": 0.0,
+            "tn": 1,
+            "fp": 0,
+            "fn": 0,
+            "tp": 0,
+            "auroc": null,
+            "auprc": 0.0,
+            "label_ratio": "0:1.000",
+            "pred_ratio": "0:1.000"
+          }
+        },
+        "intact_positive": {
+          "interaction": {
+            "n": 27,
+            "acc": 0.1852,
+            "balanced_acc": 0.1852,
+            "precision": 1.0,
+            "recall": 0.1852,
+            "specificity": null,
+            "negative_recall": null,
+            "f1": 0.3125,
+            "mcc": 0.0,
+            "tn": 0,
+            "fp": 0,
+            "fn": 22,
+            "tp": 5,
+            "auroc": null,
+            "auprc": 1.0,
+            "label_ratio": "1:1.000",
+            "pred_ratio": "0:0.815 1:0.185"
+          }
+        },
+        "negatome": {
+          "interaction": {
+            "n": 215,
+            "acc": 0.7116,
+            "balanced_acc": 0.3558,
+            "precision": 0.0,
+            "recall": 0.0,
+            "specificity": 0.7116,
+            "negative_recall": 0.7116,
+            "f1": 0.0,
+            "mcc": 0.0,
+            "tn": 153,
+            "fp": 62,
+            "fn": 0,
+            "tp": 0,
+            "auroc": null,
+            "auprc": 0.0,
+            "label_ratio": "0:1.000",
+            "pred_ratio": "0:0.712 1:0.288"
+          }
+        },
+        "ppb_affinity": {
+          "interaction": {
+            "n": 748,
+            "acc": 0.9733,
+            "balanced_acc": 0.9733,
+            "precision": 1.0,
+            "recall": 0.9733,
+            "specificity": null,
+            "negative_recall": null,
+            "f1": 0.9864,
+            "mcc": 0.0,
+            "tn": 0,
+            "fp": 0,
+            "fn": 20,
+            "tp": 728,
+            "auroc": null,
+            "auprc": 1.0,
+            "label_ratio": "1:1.000",
+            "pred_ratio": "0:0.027 1:0.973"
+          }
+        },
+        "skempi": {
+          "interaction": {
+            "n": 306,
+            "acc": 1.0,
+            "balanced_acc": 1.0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "specificity": null,
+            "negative_recall": null,
+            "f1": 1.0,
+            "mcc": 0.0,
+            "tn": 0,
+            "fp": 0,
+            "fn": 0,
+            "tp": 306,
+            "auroc": null,
+            "auprc": 1.0,
+            "label_ratio": "1:1.000",
+            "pred_ratio": "1:1.000"
+          }
+        },
+        "string": {
+          "interaction": {
+            "n": 314,
+            "acc": 0.8758,
+            "balanced_acc": 0.8758,
+            "precision": 1.0,
+            "recall": 0.8758,
+            "specificity": null,
+            "negative_recall": null,
+            "f1": 0.9338,
+            "mcc": 0.0,
+            "tn": 0,
+            "fp": 0,
+            "fn": 39,
+            "tp": 275,
+            "auroc": null,
+            "auprc": 1.0,
+            "label_ratio": "1:1.000",
+            "pred_ratio": "0:0.124 1:0.876"
+          }
+        }
+      },
+      "calibrated_classification": {
+        "interaction": {
+          "calibration_size": 1611,
+          "threshold": 0.09,
+          "acc": 0.9205,
+          "balanced_acc": 0.8015,
+          "precision": 0.9452,
+          "recall": 0.9642,
+          "specificity": 0.6389,
+          "negative_recall": 0.6389,
+          "f1": 0.9546,
+          "mcc": 0.64,
+          "tn": 138,
+          "fp": 78,
+          "fn": 50,
+          "tp": 1345,
+          "auroc": 0.9387,
+          "auprc": 0.9893,
+          "label_ratio": "0:0.134 1:0.866",
+          "pred_ratio": "0:0.117 1:0.883",
+          "n": 1611,
+          "calibration_split": "validation"
+        }
+      },
+      "provenance": {
+        "source": "README.md",
+        "train_log_version": "2026-08-12",
+        "imported_at": "2026-10-06T22:10:44+00:00",
+        "metric_decimal_places": 4,
+        "kind": "historical_report"
+      },
+      "historical_reports": {
+        "Regression Tasks": {
+          "columns": [
+            "task",
+            "n",
+            "label_mean",
+            "label_std",
+            "pred_mean",
+            "pred_std",
+            "mae",
+            "rmse",
+            "pearson",
+            "spearman",
+            "r2"
+          ],
+          "rows": [
+            {
+              "task": "affinity_ppb_affinity",
+              "n": 748,
+              "label_mean": 7.2421,
+              "label_std": 2.0063,
+              "pred_mean": 7.3945,
+              "pred_std": 0.929,
+              "mae": 1.67,
+              "rmse": 2.1025,
+              "pearson": 0.1317,
+              "spearman": 0.0918,
+              "r2": -0.0982
+            },
+            {
+              "task": "affinity_skempi",
+              "n": 294,
+              "label_mean": 6.4336,
+              "label_std": 1.7855,
+              "pred_mean": 6.8218,
+              "pred_std": 1.34,
+              "mae": 1.3053,
+              "rmse": 1.5929,
+              "pearson": 0.5427,
+              "spearman": 0.5777,
+              "r2": 0.2041
+            }
+          ],
+          "raw_table": "Regression Tasks\ntask                   n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2\n---------------------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------\naffinity_ppb_affinity  748  7.2421      2.0063     7.3945     0.9290    1.6700  2.1025  0.1317   0.0918    -0.0982\naffinity_skempi        294  6.4336      1.7855     6.8218     1.3400    1.3053  1.5929  0.5427   0.5777    0.2041",
+          "provenance": {
+            "source": "README.md",
+            "train_log_version": "2026-08-12",
+            "imported_at": "2026-10-06T22:13:58+00:00",
+            "metric_decimal_places": 4
+          },
+          "format": "historical",
+          "definitions": "Original reported metrics; not recomputed or adapted to current definitions."
+        },
+        "Source-Specific Regression Tasks": {
+          "columns": [
+            "source",
+            "task",
+            "n",
+            "label_mean",
+            "label_std",
+            "pred_mean",
+            "pred_std",
+            "mae",
+            "rmse",
+            "pearson",
+            "spearman",
+            "r2"
+          ],
+          "rows": [
+            {
+              "source": "ppb_affinity",
+              "task": "affinity_ppb_affinity",
+              "n": 748,
+              "label_mean": 7.2421,
+              "label_std": 2.0063,
+              "pred_mean": 7.3945,
+              "pred_std": 0.929,
+              "mae": 1.67,
+              "rmse": 2.1025,
+              "pearson": 0.1317,
+              "spearman": 0.0918,
+              "r2": -0.0982
+            },
+            {
+              "source": "skempi",
+              "task": "affinity_skempi",
+              "n": 294,
+              "label_mean": 6.4336,
+              "label_std": 1.7855,
+              "pred_mean": 6.8218,
+              "pred_std": 1.34,
+              "mae": 1.3053,
+              "rmse": 1.5929,
+              "pearson": 0.5427,
+              "spearman": 0.5777,
+              "r2": 0.2041
+            }
+          ],
+          "raw_table": "Source-Specific Regression Tasks\nsource        task                   n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2\n------------  ---------------------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------\nppb_affinity  affinity_ppb_affinity  748  7.2421      2.0063     7.3945     0.9290    1.6700  2.1025  0.1317   0.0918    -0.0982\nskempi        affinity_skempi        294  6.4336      1.7855     6.8218     1.3400    1.3053  1.5929  0.5427   0.5777    0.2041",
+          "provenance": {
+            "source": "README.md",
+            "train_log_version": "2026-08-12",
+            "imported_at": "2026-10-06T22:13:58+00:00",
+            "metric_decimal_places": 4
+          },
+          "format": "historical",
+          "definitions": "Original reported metrics; not recomputed or adapted to current definitions."
+        },
+        "Source-Normalized Regression Tasks": {
+          "columns": [
+            "task",
+            "n",
+            "label_mean",
+            "label_std",
+            "pred_mean",
+            "pred_std",
+            "mae",
+            "rmse",
+            "pearson",
+            "spearman",
+            "r2"
+          ],
+          "rows": [
+            {
+              "task": "affinity_ppb_affinity",
+              "n": 748,
+              "label_mean": -0.0,
+              "label_std": 1.0,
+              "pred_mean": 0.076,
+              "pred_std": 0.463,
+              "mae": 0.8323,
+              "rmse": 1.0479,
+              "pearson": 0.1317,
+              "spearman": 0.0918,
+              "r2": -0.0982
+            },
+            {
+              "task": "affinity_skempi",
+              "n": 294,
+              "label_mean": 0.0,
+              "label_std": 1.0,
+              "pred_mean": 0.2174,
+              "pred_std": 0.7505,
+              "mae": 0.7311,
+              "rmse": 0.8921,
+              "pearson": 0.5427,
+              "spearman": 0.5777,
+              "r2": 0.2041
+            }
+          ],
+          "raw_table": "Source-Normalized Regression Tasks\ntask                   n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2\n---------------------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------\naffinity_ppb_affinity  748  -0.0000     1.0000     0.0760     0.4630    0.8323  1.0479  0.1317   0.0918    -0.0982\naffinity_skempi        294  0.0000      1.0000     0.2174     0.7505    0.7311  0.8921  0.5427   0.5777    0.2041",
+          "provenance": {
+            "source": "README.md",
+            "train_log_version": "2026-08-12",
+            "imported_at": "2026-10-06T22:13:58+00:00",
+            "metric_decimal_places": 4
+          },
+          "format": "historical",
+          "definitions": "Original reported metrics; not recomputed or adapted to current definitions."
+        },
+        "Checkpoint Regression Calibration Applied": {
+          "columns": [
+            "task",
+            "cal_n",
+            "slope",
+            "intercept",
+            "pred_mean",
+            "pred_std",
+            "mae",
+            "rmse",
+            "pearson",
+            "spearman",
+            "r2"
+          ],
+          "rows": [
+            {
+              "task": "affinity_ppb_affinity",
+              "cal_n": 748,
+              "slope": 0.284,
+              "intercept": 5.142,
+              "pred_mean": 7.2422,
+              "pred_std": 0.2638,
+              "mae": 1.5614,
+              "rmse": 1.9889,
+              "pearson": 0.1317,
+              "spearman": 0.0918,
+              "r2": 0.0174
+            },
+            {
+              "task": "affinity_skempi",
+              "cal_n": 294,
+              "slope": 0.7234,
+              "intercept": 1.4996,
+              "pred_mean": 6.4344,
+              "pred_std": 0.9693,
+              "mae": 1.1558,
+              "rmse": 1.4996,
+              "pearson": 0.5427,
+              "spearman": 0.5777,
+              "r2": 0.2945
+            }
+          ],
+          "raw_table": "Checkpoint Regression Calibration Applied\ntask                   cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2\n---------------------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  ------\naffinity_ppb_affinity  748    0.2840  5.1420     7.2422     0.2638    1.5614  1.9889  0.1317   0.0918    0.0174\naffinity_skempi        294    0.7234  1.4996     6.4344     0.9693    1.1558  1.4996  0.5427   0.5777    0.2945",
+          "provenance": {
+            "source": "README.md",
+            "train_log_version": "2026-08-12",
+            "imported_at": "2026-10-06T22:13:58+00:00",
+            "metric_decimal_places": 4
+          },
+          "format": "historical",
+          "definitions": "Original reported metrics; not recomputed or adapted to current definitions."
+        }
+      }
+    },
+    "test": {
+      "evaluated_at": null,
+      "cache_path": "data/tokenized/multitask_group_pair_prostt5_tokens.pt",
+      "dataset_size": 1613,
+      "classification": {
+        "interaction": {
+          "n": 1613,
+          "acc": 0.8692,
+          "balanced_acc": 0.8658,
+          "precision": 0.9759,
+          "recall": 0.8704,
+          "specificity": 0.8611,
+          "negative_recall": 0.8611,
+          "f1": 0.9202,
+          "mcc": 0.5943,
+          "tn": 186,
+          "fp": 30,
+          "fn": 181,
+          "tp": 1216,
+          "auroc": 0.9515,
+          "auprc": 0.9918,
+          "label_ratio": "0:0.134 1:0.866",
+          "pred_ratio": "0:0.228 1:0.772"
+        }
+      },
+      "by_source": {
+        "intact_positive": {
+          "interaction": {
+            "n": 22,
+            "acc": 0.1818,
+            "balanced_acc": 0.1818,
+            "precision": 1.0,
+            "recall": 0.1818,
+            "specificity": null,
+            "negative_recall": null,
+            "f1": 0.3077,
+            "mcc": 0.0,
+            "tn": 0,
+            "fp": 0,
+            "fn": 18,
+            "tp": 4,
+            "auroc": null,
+            "auprc": 1.0,
+            "label_ratio": "1:1.000",
+            "pred_ratio": "0:0.818 1:0.182"
+          }
+        },
+        "negatome": {
+          "interaction": {
+            "n": 216,
+            "acc": 0.8611,
+            "balanced_acc": 0.4306,
+            "precision": 0.0,
+            "recall": 0.0,
+            "specificity": 0.8611,
+            "negative_recall": 0.8611,
+            "f1": 0.0,
+            "mcc": 0.0,
+            "tn": 186,
+            "fp": 30,
+            "fn": 0,
+            "tp": 0,
+            "auroc": null,
+            "auprc": 0.0,
+            "label_ratio": "0:1.000",
+            "pred_ratio": "0:0.861 1:0.139"
+          }
+        },
+        "ppb_affinity": {
+          "interaction": {
+            "n": 761,
+            "acc": 0.8476,
+            "balanced_acc": 0.8476,
+            "precision": 1.0,
+            "recall": 0.8476,
+            "specificity": null,
+            "negative_recall": null,
+            "f1": 0.9175,
+            "mcc": 0.0,
+            "tn": 0,
+            "fp": 0,
+            "fn": 116,
+            "tp": 645,
+            "auroc": null,
+            "auprc": 1.0,
+            "label_ratio": "1:1.000",
+            "pred_ratio": "0:0.152 1:0.848"
+          }
+        },
+        "skempi": {
+          "interaction": {
+            "n": 300,
+            "acc": 0.96,
+            "balanced_acc": 0.96,
+            "precision": 1.0,
+            "recall": 0.96,
+            "specificity": null,
+            "negative_recall": null,
+            "f1": 0.9796,
+            "mcc": 0.0,
+            "tn": 0,
+            "fp": 0,
+            "fn": 12,
+            "tp": 288,
+            "auroc": null,
+            "auprc": 1.0,
+            "label_ratio": "1:1.000",
+            "pred_ratio": "0:0.040 1:0.960"
+          }
+        },
+        "string": {
+          "interaction": {
+            "n": 314,
+            "acc": 0.8885,
+            "balanced_acc": 0.8885,
+            "precision": 1.0,
+            "recall": 0.8885,
+            "specificity": null,
+            "negative_recall": null,
+            "f1": 0.941,
+            "mcc": 0.0,
+            "tn": 0,
+            "fp": 0,
+            "fn": 35,
+            "tp": 279,
+            "auroc": null,
+            "auprc": 1.0,
+            "label_ratio": "1:1.000",
+            "pred_ratio": "0:0.111 1:0.889"
+          }
+        }
+      },
+      "calibrated_classification": {
+        "interaction": {
+          "calibration_size": 1611,
+          "threshold": 0.09,
+          "acc": 0.8797,
+          "balanced_acc": 0.819,
+          "precision": 0.9567,
+          "recall": 0.9019,
+          "specificity": 0.7361,
+          "negative_recall": 0.7361,
+          "f1": 0.9285,
+          "mcc": 0.5614,
+          "tn": 159,
+          "fp": 57,
+          "fn": 137,
+          "tp": 1260,
+          "auroc": 0.9515,
+          "auprc": 0.9918,
+          "label_ratio": "0:0.134 1:0.866",
+          "pred_ratio": "0:0.184 1:0.816",
+          "n": 1613,
+          "calibration_split": "validation"
+        }
+      },
+      "provenance": {
+        "source": "README.md",
+        "train_log_version": "2026-08-12",
+        "imported_at": "2026-10-06T22:10:44+00:00",
+        "metric_decimal_places": 4,
+        "kind": "historical_report"
+      },
+      "historical_reports": {
+        "Regression Tasks": {
+          "columns": [
+            "task",
+            "n",
+            "label_mean",
+            "label_std",
+            "pred_mean",
+            "pred_std",
+            "mae",
+            "rmse",
+            "pearson",
+            "spearman",
+            "r2"
+          ],
+          "rows": [
+            {
+              "task": "affinity_ppb_affinity",
+              "n": 761,
+              "label_mean": 7.317,
+              "label_std": 2.045,
+              "pred_mean": 7.3219,
+              "pred_std": 1.0303,
+              "mae": 1.7415,
+              "rmse": 2.2004,
+              "pearson": 0.0954,
+              "spearman": 0.1038,
+              "r2": -0.1577
+            },
+            {
+              "task": "affinity_skempi",
+              "n": 281,
+              "label_mean": 7.9862,
+              "label_std": 2.3037,
+              "pred_mean": 6.9642,
+              "pred_std": 0.8739,
+              "mae": 2.0548,
+              "rmse": 2.7,
+              "pearson": -0.0434,
+              "spearman": -0.0755,
+              "r2": -0.3736
+            }
+          ],
+          "raw_table": "Regression Tasks\ntask                   n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2\n---------------------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------\naffinity_ppb_affinity  761  7.3170      2.0450     7.3219     1.0303    1.7415  2.2004  0.0954   0.1038    -0.1577\naffinity_skempi        281  7.9862      2.3037     6.9642     0.8739    2.0548  2.7000  -0.0434  -0.0755   -0.3736",
+          "provenance": {
+            "source": "README.md",
+            "train_log_version": "2026-08-12",
+            "imported_at": "2026-10-06T22:13:58+00:00",
+            "metric_decimal_places": 4
+          },
+          "format": "historical",
+          "definitions": "Original reported metrics; not recomputed or adapted to current definitions."
+        },
+        "Source-Specific Regression Tasks": {
+          "columns": [
+            "source",
+            "task",
+            "n",
+            "label_mean",
+            "label_std",
+            "pred_mean",
+            "pred_std",
+            "mae",
+            "rmse",
+            "pearson",
+            "spearman",
+            "r2"
+          ],
+          "rows": [
+            {
+              "source": "ppb_affinity",
+              "task": "affinity_ppb_affinity",
+              "n": 761,
+              "label_mean": 7.317,
+              "label_std": 2.045,
+              "pred_mean": 7.3219,
+              "pred_std": 1.0303,
+              "mae": 1.7415,
+              "rmse": 2.2004,
+              "pearson": 0.0954,
+              "spearman": 0.1038,
+              "r2": -0.1577
+            },
+            {
+              "source": "skempi",
+              "task": "affinity_skempi",
+              "n": 281,
+              "label_mean": 7.9862,
+              "label_std": 2.3037,
+              "pred_mean": 6.9642,
+              "pred_std": 0.8739,
+              "mae": 2.0548,
+              "rmse": 2.7,
+              "pearson": -0.0434,
+              "spearman": -0.0755,
+              "r2": -0.3736
+            }
+          ],
+          "raw_table": "Source-Specific Regression Tasks\nsource        task                   n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2\n------------  ---------------------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------\nppb_affinity  affinity_ppb_affinity  761  7.3170      2.0450     7.3219     1.0303    1.7415  2.2004  0.0954   0.1038    -0.1577\nskempi        affinity_skempi        281  7.9862      2.3037     6.9642     0.8739    2.0548  2.7000  -0.0434  -0.0755   -0.3736",
+          "provenance": {
+            "source": "README.md",
+            "train_log_version": "2026-08-12",
+            "imported_at": "2026-10-06T22:13:58+00:00",
+            "metric_decimal_places": 4
+          },
+          "format": "historical",
+          "definitions": "Original reported metrics; not recomputed or adapted to current definitions."
+        },
+        "Source-Normalized Regression Tasks": {
+          "columns": [
+            "task",
+            "n",
+            "label_mean",
+            "label_std",
+            "pred_mean",
+            "pred_std",
+            "mae",
+            "rmse",
+            "pearson",
+            "spearman",
+            "r2"
+          ],
+          "rows": [
+            {
+              "task": "affinity_ppb_affinity",
+              "n": 761,
+              "label_mean": -0.0,
+              "label_std": 1.0,
+              "pred_mean": 0.0024,
+              "pred_std": 0.5038,
+              "mae": 0.8515,
+              "rmse": 1.076,
+              "pearson": 0.0954,
+              "spearman": 0.1038,
+              "r2": -0.1577
+            },
+            {
+              "task": "affinity_skempi",
+              "n": 281,
+              "label_mean": 0.0,
+              "label_std": 1.0,
+              "pred_mean": -0.4436,
+              "pred_std": 0.3793,
+              "mae": 0.8919,
+              "rmse": 1.172,
+              "pearson": -0.0434,
+              "spearman": -0.0755,
+              "r2": -0.3736
+            }
+          ],
+          "raw_table": "Source-Normalized Regression Tasks\ntask                   n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2\n---------------------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------\naffinity_ppb_affinity  761  -0.0000     1.0000     0.0024     0.5038    0.8515  1.0760  0.0954   0.1038    -0.1577\naffinity_skempi        281  0.0000      1.0000     -0.4436    0.3793    0.8919  1.1720  -0.0434  -0.0755   -0.3736",
+          "provenance": {
+            "source": "README.md",
+            "train_log_version": "2026-08-12",
+            "imported_at": "2026-10-06T22:13:58+00:00",
+            "metric_decimal_places": 4
+          },
+          "format": "historical",
+          "definitions": "Original reported metrics; not recomputed or adapted to current definitions."
+        },
+        "Checkpoint Regression Calibration Applied": {
+          "columns": [
+            "task",
+            "cal_n",
+            "slope",
+            "intercept",
+            "pred_mean",
+            "pred_std",
+            "mae",
+            "rmse",
+            "pearson",
+            "spearman",
+            "r2"
+          ],
+          "rows": [
+            {
+              "task": "affinity_ppb_affinity",
+              "cal_n": 748,
+              "slope": 0.284,
+              "intercept": 5.142,
+              "pred_mean": 7.2215,
+              "pred_std": 0.2926,
+              "mae": 1.5921,
+              "rmse": 2.0403,
+              "pearson": 0.0954,
+              "spearman": 0.1038,
+              "r2": 0.0047
+            },
+            {
+              "task": "affinity_skempi",
+              "cal_n": 294,
+              "slope": 0.7234,
+              "intercept": 1.4996,
+              "pred_mean": 6.5374,
+              "pred_std": 0.6322,
+              "mae": 2.128,
+              "rmse": 2.8164,
+              "pearson": -0.0434,
+              "spearman": -0.0755,
+              "r2": -0.4946
+            }
+          ],
+          "raw_table": "Checkpoint Regression Calibration Applied\ntask                   cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2\n---------------------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  -------\naffinity_ppb_affinity  748    0.2840  5.1420     7.2215     0.2926    1.5921  2.0403  0.0954   0.1038    0.0047\naffinity_skempi        294    0.7234  1.4996     6.5374     0.6322    2.1280  2.8164  -0.0434  -0.0755   -0.4946",
+          "provenance": {
+            "source": "README.md",
+            "train_log_version": "2026-08-12",
+            "imported_at": "2026-10-06T22:13:58+00:00",
+            "metric_decimal_places": 4
+          },
+          "format": "historical",
+          "definitions": "Original reported metrics; not recomputed or adapted to current definitions."
+        }
+      }
+    }
+  },
+  "historical_train_log": {
+    "source": "README.md",
+    "version": "2026-08-12",
+    "imported_at": "2026-10-06T22:13:58+00:00",
+    "notes_path": "notes.md"
+  }
+}

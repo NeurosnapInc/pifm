@@ -1,0 +1,347 @@
+{
+  "schema_version": 1,
+  "splits": {
+    "validation": {
+      "evaluated_at": null,
+      "cache_path": "data/tokenized/multitask_group_pair_prostt5_tokens.pt",
+      "dataset_size": 1611,
+      "classification": {},
+      "by_source": {},
+      "calibrated_classification": {},
+      "historical_reports": {
+        "Classification Tasks": {
+          "columns": [
+            "task",
+            "n",
+            "acc",
+            "bal_acc",
+            "precision",
+            "recall",
+            "f1",
+            "auroc",
+            "auprc",
+            "label_ratio",
+            "pred_ratio"
+          ],
+          "rows": [
+            {
+              "task": "interaction",
+              "n": 1611,
+              "acc": 0.8672,
+              "bal_acc": 0.5046,
+              "precision": 0.867,
+              "recall": 1.0,
+              "f1": 0.9288,
+              "auroc": 0.8828,
+              "auprc": 0.9781,
+              "label_ratio": "0:0.134 1:0.866",
+              "pred_ratio": "0:0.001 1:0.999"
+            }
+          ],
+          "raw_table": "Classification Tasks\ntask         n     acc     bal_acc  precision  recall  f1      auroc   auprc   label_ratio      pred_ratio\n-----------  ----  ------  -------  ---------  ------  ------  ------  ------  ---------------  ---------------\ninteraction  1611  0.8672  0.5046   0.8670     1.0000  0.9288  0.8828  0.9781  0:0.134 1:0.866  0:0.001 1:0.999",
+          "provenance": {
+            "source": "README.md",
+            "train_log_version": "2026-07-13",
+            "imported_at": "2026-10-06T22:13:58+00:00",
+            "metric_decimal_places": 4
+          },
+          "format": "historical",
+          "definitions": "Original reported metrics; not recomputed or adapted to current definitions."
+        },
+        "Regression Tasks": {
+          "columns": [
+            "task",
+            "n",
+            "label_mean",
+            "label_std",
+            "pred_mean",
+            "pred_std",
+            "mae",
+            "rmse",
+            "pearson",
+            "spearman",
+            "r2"
+          ],
+          "rows": [
+            {
+              "task": "affinity",
+              "n": 1042,
+              "label_mean": 7.014,
+              "label_std": 1.9803,
+              "pred_mean": 7.6647,
+              "pred_std": 1.269,
+              "mae": 1.5393,
+              "rmse": 1.8678,
+              "pearson": 0.4908,
+              "spearman": 0.45,
+              "r2": 0.1104
+            }
+          ],
+          "raw_table": "Regression Tasks\ntask      n     label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2\n--------  ----  ----------  ---------  ---------  --------  ------  ------  -------  --------  ------\naffinity  1042  7.0140      1.9803     7.6647     1.2690    1.5393  1.8678  0.4908   0.4500    0.1104",
+          "provenance": {
+            "source": "README.md",
+            "train_log_version": "2026-07-13",
+            "imported_at": "2026-10-06T22:13:58+00:00",
+            "metric_decimal_places": 4
+          },
+          "format": "historical",
+          "definitions": "Original reported metrics; not recomputed or adapted to current definitions."
+        },
+        "Checkpoint Classification Calibration Applied": {
+          "columns": [
+            "task",
+            "cal_n",
+            "thr",
+            "acc",
+            "bal_acc",
+            "precision",
+            "recall",
+            "f1",
+            "auroc",
+            "auprc",
+            "label_ratio",
+            "pred_ratio"
+          ],
+          "rows": [
+            {
+              "task": "interaction",
+              "cal_n": 1611,
+              "thr": 0.87,
+              "acc": 0.8759,
+              "bal_acc": 0.5429,
+              "precision": 0.876,
+              "recall": 0.9978,
+              "f1": 0.933,
+              "auroc": 0.8828,
+              "auprc": 0.9781,
+              "label_ratio": "0:0.134 1:0.866",
+              "pred_ratio": "0:0.014 1:0.986"
+            }
+          ],
+          "raw_table": "Checkpoint Classification Calibration Applied\ntask         cal_n  thr     acc     bal_acc  precision  recall  f1      auroc   auprc   label_ratio      pred_ratio\n-----------  -----  ------  ------  -------  ---------  ------  ------  ------  ------  ---------------  ---------------\ninteraction  1611   0.8700  0.8759  0.5429   0.8760     0.9978  0.9330  0.8828  0.9781  0:0.134 1:0.866  0:0.014 1:0.986",
+          "provenance": {
+            "source": "README.md",
+            "train_log_version": "2026-07-13",
+            "imported_at": "2026-10-06T22:13:58+00:00",
+            "metric_decimal_places": 4
+          },
+          "format": "historical",
+          "definitions": "Original reported metrics; not recomputed or adapted to current definitions."
+        },
+        "Checkpoint Regression Calibration Applied": {
+          "columns": [
+            "task",
+            "cal_n",
+            "slope",
+            "intercept",
+            "pred_mean",
+            "pred_std",
+            "mae",
+            "rmse",
+            "pearson",
+            "spearman",
+            "r2"
+          ],
+          "rows": [
+            {
+              "task": "affinity",
+              "cal_n": 1042,
+              "slope": 0.7669,
+              "intercept": 1.137,
+              "pred_mean": 7.0153,
+              "pred_std": 0.9732,
+              "mae": 1.3849,
+              "rmse": 1.7254,
+              "pearson": 0.4908,
+              "spearman": 0.45,
+              "r2": 0.2409
+            }
+          ],
+          "raw_table": "Checkpoint Regression Calibration Applied\ntask      cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2\n--------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  ------\naffinity  1042   0.7669  1.1370     7.0153     0.9732    1.3849  1.7254  0.4908   0.4500    0.2409",
+          "provenance": {
+            "source": "README.md",
+            "train_log_version": "2026-07-13",
+            "imported_at": "2026-10-06T22:13:58+00:00",
+            "metric_decimal_places": 4
+          },
+          "format": "historical",
+          "definitions": "Original reported metrics; not recomputed or adapted to current definitions."
+        }
+      }
+    },
+    "test": {
+      "evaluated_at": null,
+      "cache_path": "data/tokenized/multitask_group_pair_prostt5_tokens.pt",
+      "dataset_size": 1613,
+      "classification": {},
+      "by_source": {},
+      "calibrated_classification": {},
+      "historical_reports": {
+        "Classification Tasks": {
+          "columns": [
+            "task",
+            "n",
+            "acc",
+            "bal_acc",
+            "precision",
+            "recall",
+            "f1",
+            "auroc",
+            "auprc",
+            "label_ratio",
+            "pred_ratio"
+          ],
+          "rows": [
+            {
+              "task": "interaction",
+              "n": 1613,
+              "acc": 0.8772,
+              "bal_acc": 0.5436,
+              "precision": 0.8763,
+              "recall": 0.9993,
+              "f1": 0.9338,
+              "auroc": 0.9474,
+              "auprc": 0.9907,
+              "label_ratio": "0:0.134 1:0.866",
+              "pred_ratio": "0:0.012 1:0.988"
+            }
+          ],
+          "raw_table": "Classification Tasks\ntask         n     acc     bal_acc  precision  recall  f1      auroc   auprc   label_ratio      pred_ratio\n-----------  ----  ------  -------  ---------  ------  ------  ------  ------  ---------------  ---------------\ninteraction  1613  0.8772  0.5436   0.8763     0.9993  0.9338  0.9474  0.9907  0:0.134 1:0.866  0:0.012 1:0.988",
+          "provenance": {
+            "source": "README.md",
+            "train_log_version": "2026-07-13",
+            "imported_at": "2026-10-06T22:13:58+00:00",
+            "metric_decimal_places": 4
+          },
+          "format": "historical",
+          "definitions": "Original reported metrics; not recomputed or adapted to current definitions."
+        },
+        "Regression Tasks": {
+          "columns": [
+            "task",
+            "n",
+            "label_mean",
+            "label_std",
+            "pred_mean",
+            "pred_std",
+            "mae",
+            "rmse",
+            "pearson",
+            "spearman",
+            "r2"
+          ],
+          "rows": [
+            {
+              "task": "affinity",
+              "n": 1042,
+              "label_mean": 7.4975,
+              "label_std": 2.1386,
+              "pred_mean": 7.4847,
+              "pred_std": 1.183,
+              "mae": 1.9024,
+              "rmse": 2.4361,
+              "pearson": 0.0077,
+              "spearman": 0.0571,
+              "r2": -0.2975
+            }
+          ],
+          "raw_table": "Regression Tasks\ntask      n     label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2\n--------  ----  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------\naffinity  1042  7.4975      2.1386     7.4847     1.1830    1.9024  2.4361  0.0077   0.0571    -0.2975",
+          "provenance": {
+            "source": "README.md",
+            "train_log_version": "2026-07-13",
+            "imported_at": "2026-10-06T22:13:58+00:00",
+            "metric_decimal_places": 4
+          },
+          "format": "historical",
+          "definitions": "Original reported metrics; not recomputed or adapted to current definitions."
+        },
+        "Checkpoint Classification Calibration Applied": {
+          "columns": [
+            "task",
+            "cal_n",
+            "thr",
+            "acc",
+            "bal_acc",
+            "precision",
+            "recall",
+            "f1",
+            "auroc",
+            "auprc",
+            "label_ratio",
+            "pred_ratio"
+          ],
+          "rows": [
+            {
+              "task": "interaction",
+              "cal_n": 1611,
+              "thr": 0.87,
+              "acc": 0.9033,
+              "bal_acc": 0.6448,
+              "precision": 0.9011,
+              "recall": 0.9979,
+              "f1": 0.947,
+              "auroc": 0.9474,
+              "auprc": 0.9907,
+              "label_ratio": "0:0.134 1:0.866",
+              "pred_ratio": "0:0.041 1:0.959"
+            }
+          ],
+          "raw_table": "Checkpoint Classification Calibration Applied\ntask         cal_n  thr     acc     bal_acc  precision  recall  f1      auroc   auprc   label_ratio      pred_ratio\n-----------  -----  ------  ------  -------  ---------  ------  ------  ------  ------  ---------------  ---------------\ninteraction  1611   0.8700  0.9033  0.6448   0.9011     0.9979  0.9470  0.9474  0.9907  0:0.134 1:0.866  0:0.041 1:0.959",
+          "provenance": {
+            "source": "README.md",
+            "train_log_version": "2026-07-13",
+            "imported_at": "2026-10-06T22:13:58+00:00",
+            "metric_decimal_places": 4
+          },
+          "format": "historical",
+          "definitions": "Original reported metrics; not recomputed or adapted to current definitions."
+        },
+        "Checkpoint Regression Calibration Applied": {
+          "columns": [
+            "task",
+            "cal_n",
+            "slope",
+            "intercept",
+            "pred_mean",
+            "pred_std",
+            "mae",
+            "rmse",
+            "pearson",
+            "spearman",
+            "r2"
+          ],
+          "rows": [
+            {
+              "task": "affinity",
+              "cal_n": 1042,
+              "slope": 0.7669,
+              "intercept": 1.137,
+              "pred_mean": 6.8773,
+              "pred_std": 0.9073,
+              "mae": 1.8411,
+              "rmse": 2.3983,
+              "pearson": 0.0077,
+              "spearman": 0.0571,
+              "r2": -0.2576
+            }
+          ],
+          "raw_table": "Checkpoint Regression Calibration Applied\ntask      cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2\n--------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  -------\naffinity  1042   0.7669  1.1370     6.8773     0.9073    1.8411  2.3983  0.0077   0.0571    -0.2576",
+          "provenance": {
+            "source": "README.md",
+            "train_log_version": "2026-07-13",
+            "imported_at": "2026-10-06T22:13:58+00:00",
+            "metric_decimal_places": 4
+          },
+          "format": "historical",
+          "definitions": "Original reported metrics; not recomputed or adapted to current definitions."
+        }
+      }
+    }
+  },
+  "historical_train_log": {
+    "source": "README.md",
+    "version": "2026-07-13",
+    "imported_at": "2026-10-06T22:13:58+00:00",
+    "notes_path": "notes.md"
+  }
+}

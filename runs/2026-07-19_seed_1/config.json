@@ -1,0 +1,102 @@
+{
+  "embed_dim": 1024,
+  "adapter_dim": 64,
+  "dropout": 0.1,
+  "classification_head_hidden": 256,
+  "regression_head_hidden": 512,
+  "model_name": "Rostlab/ProstT5",
+  "tokenized_data_path": "data/tokenized/multitask_group_pair_prostt5_tokens.pt",
+  "task_names": [
+    "interaction",
+    "affinity"
+  ],
+  "task_metas": {
+    "interaction": {
+      "task_name": "interaction",
+      "dtype": "bool",
+      "head_type": "pair_binary",
+      "num_classes": 2,
+      "loss": "ce"
+    },
+    "affinity": {
+      "task_name": "affinity",
+      "dtype": "float",
+      "head_type": "pair_regression",
+      "num_classes": null,
+      "loss": "mse"
+    }
+  },
+  "task_output_dims": {
+    "interaction": 2,
+    "affinity": 1
+  },
+  "regression_mean": [
+    0.0,
+    7.819456100463867
+  ],
+  "regression_std": [
+    1.0,
+    2.0973687171936035
+  ],
+  "regression_loss": "huber",
+  "regression_huber_delta": 1.0,
+  "affinity_normalization": "global",
+  "min_source_affinity_labels": 20,
+  "source_regression_stats": {},
+  "interaction_loss": "focal",
+  "focal_gamma": 2.0,
+  "interaction_pos_neg_ratio": 5.0,
+  "source_balanced_sampling": true,
+  "calibration": {
+    "source_split": "validation",
+    "classification": {
+      "interaction": {
+        "threshold": 0.67,
+        "calibration_size": 1611
+      }
+    },
+    "regression": {
+      "affinity": {
+        "slope": 0.6030172109603882,
+        "intercept": 2.4131522178649902,
+        "calibration_size": 1042
+      }
+    }
+  },
+  "training_seed": 1,
+  "run_date": "2026-07-19",
+  "best_aggregate_score": 0.0405796793427009,
+  "best_task_reports": {
+    "interaction": {
+      "metric_name": "f1",
+      "metric_value": 0.9478108581436077,
+      "selection_metric": 0.8790671047391477,
+      "selection_metric_name": "auroc",
+      "report": {
+        "acc": 0.9075108628181254,
+        "balanced_accuracy": 0.7372610513739546,
+        "specificity": 0.5046296296296297,
+        "negative_recall": 0.5046296296296297,
+        "mcc": 0.5547604912522784,
+        "f1": 0.9478108581436077,
+        "auroc": 0.8790671047391477
+      }
+    },
+    "affinity": {
+      "metric_name": "mae",
+      "metric_value": 1.673506753000783,
+      "selection_metric": -0.7979077460537459,
+      "selection_metric_name": "negative_normalized_mae",
+      "report": {
+        "mae": 1.673506753000783,
+        "rmse": 2.0208777387459076,
+        "normalized_mae": 0.7979077460537459,
+        "pearson": 0.31222223056454407
+      }
+    }
+  },
+  "classification_selection_metric": "auroc",
+  "regression_selection_metric": "normalized_mae",
+  "min_classification_val_labels": 100,
+  "min_regression_val_labels": 100
+}

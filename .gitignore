@@ -5,6 +5,8 @@ pifm.egg-info
 # Raw + processed datasets (downloaded locally, never committed)
 data/
 checkpoints/
+runs/**/checkpoint.pt
+runs/.migrate-*/
 
 # temporary - remove later
 PAPER.md

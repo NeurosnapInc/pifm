@@ -1,0 +1,370 @@
+{
+  "schema_version": 1,
+  "splits": {
+    "validation": {
+      "evaluated_at": null,
+      "cache_path": "data/tokenized/interaction_group_pair_prostt5_tokens.pt",
+      "dataset_size": 1614,
+      "classification": {
+        "interaction": {
+          "n": 1614,
+          "acc": 0.8978,
+          "balanced_acc": 0.8079,
+          "precision": 0.9503,
+          "recall": 0.9306,
+          "specificity": 0.6852,
+          "negative_recall": 0.6852,
+          "f1": 0.9404,
+          "mcc": 0.5843,
+          "tn": 148,
+          "fp": 68,
+          "fn": 97,
+          "tp": 1301,
+          "auroc": 0.8964,
+          "auprc": 0.9775,
+          "label_ratio": "0:0.134 1:0.866",
+          "pred_ratio": "0:0.152 1:0.848"
+        }
+      },
+      "by_source": {
+        "intact_positive": {
+          "interaction": {
+            "n": 24,
+            "acc": 0.25,
+            "balanced_acc": 0.25,
+            "precision": 1.0,
+            "recall": 0.25,
+            "specificity": null,
+            "negative_recall": null,
+            "f1": 0.4,
+            "mcc": 0.0,
+            "tn": 0,
+            "fp": 0,
+            "fn": 18,
+            "tp": 6,
+            "auroc": null,
+            "auprc": 1.0,
+            "label_ratio": "1:1.000",
+            "pred_ratio": "0:0.750 1:0.250"
+          }
+        },
+        "negatome": {
+          "interaction": {
+            "n": 216,
+            "acc": 0.6852,
+            "balanced_acc": 0.3426,
+            "precision": 0.0,
+            "recall": 0.0,
+            "specificity": 0.6852,
+            "negative_recall": 0.6852,
+            "f1": 0.0,
+            "mcc": 0.0,
+            "tn": 148,
+            "fp": 68,
+            "fn": 0,
+            "tp": 0,
+            "auroc": null,
+            "auprc": 0.0,
+            "label_ratio": "0:1.000",
+            "pred_ratio": "0:0.685 1:0.315"
+          }
+        },
+        "ppb_affinity": {
+          "interaction": {
+            "n": 754,
+            "acc": 0.9324,
+            "balanced_acc": 0.9324,
+            "precision": 1.0,
+            "recall": 0.9324,
+            "specificity": null,
+            "negative_recall": null,
+            "f1": 0.965,
+            "mcc": 0.0,
+            "tn": 0,
+            "fp": 0,
+            "fn": 51,
+            "tp": 703,
+            "auroc": null,
+            "auprc": 1.0,
+            "label_ratio": "1:1.000",
+            "pred_ratio": "0:0.068 1:0.932"
+          }
+        },
+        "skempi": {
+          "interaction": {
+            "n": 304,
+            "acc": 0.9605,
+            "balanced_acc": 0.9605,
+            "precision": 1.0,
+            "recall": 0.9605,
+            "specificity": null,
+            "negative_recall": null,
+            "f1": 0.9799,
+            "mcc": 0.0,
+            "tn": 0,
+            "fp": 0,
+            "fn": 12,
+            "tp": 292,
+            "auroc": null,
+            "auprc": 1.0,
+            "label_ratio": "1:1.000",
+            "pred_ratio": "0:0.039 1:0.961"
+          }
+        },
+        "string": {
+          "interaction": {
+            "n": 316,
+            "acc": 0.9494,
+            "balanced_acc": 0.9494,
+            "precision": 1.0,
+            "recall": 0.9494,
+            "specificity": null,
+            "negative_recall": null,
+            "f1": 0.974,
+            "mcc": 0.0,
+            "tn": 0,
+            "fp": 0,
+            "fn": 16,
+            "tp": 300,
+            "auroc": null,
+            "auprc": 1.0,
+            "label_ratio": "1:1.000",
+            "pred_ratio": "0:0.051 1:0.949"
+          }
+        }
+      },
+      "calibrated_classification": {
+        "interaction": {
+          "calibration_size": 1614,
+          "threshold": 0.4,
+          "acc": 0.9095,
+          "balanced_acc": 0.8088,
+          "precision": 0.9491,
+          "recall": 0.9464,
+          "specificity": 0.6713,
+          "negative_recall": 0.6713,
+          "f1": 0.9477,
+          "mcc": 0.6129,
+          "tn": 145,
+          "fp": 71,
+          "fn": 75,
+          "tp": 1323,
+          "auroc": 0.8964,
+          "auprc": 0.9775,
+          "label_ratio": "0:0.134 1:0.866",
+          "pred_ratio": "0:0.136 1:0.864",
+          "n": 1614,
+          "calibration_split": "validation"
+        }
+      },
+      "provenance": {
+        "source": "README.md",
+        "train_log_version": "2026-08-13",
+        "imported_at": "2026-10-06T22:10:44+00:00",
+        "metric_decimal_places": 4,
+        "kind": "historical_report"
+      }
+    },
+    "test": {
+      "evaluated_at": null,
+      "cache_path": "data/tokenized/interaction_group_pair_prostt5_tokens.pt",
+      "dataset_size": 1615,
+      "classification": {
+        "interaction": {
+          "n": 1615,
+          "acc": 0.8743,
+          "balanced_acc": 0.6886,
+          "precision": 0.9153,
+          "recall": 0.9421,
+          "specificity": 0.4352,
+          "negative_recall": 0.4352,
+          "f1": 0.9285,
+          "mcc": 0.4131,
+          "tn": 94,
+          "fp": 122,
+          "fn": 81,
+          "tp": 1318,
+          "auroc": 0.8353,
+          "auprc": 0.9575,
+          "label_ratio": "0:0.134 1:0.866",
+          "pred_ratio": "0:0.108 1:0.892"
+        }
+      },
+      "by_source": {
+        "intact_negative": {
+          "interaction": {
+            "n": 1,
+            "acc": 1.0,
+            "balanced_acc": 0.5,
+            "precision": 0.0,
+            "recall": 0.0,
+            "specificity": 1.0,
+            "negative_recall": 1.0,
+            "f1": 0.0,
+            "mcc": 0.0,
+            "tn": 1,
+            "fp": 0,
+            "fn": 0,
+            "tp": 0,
+            "auroc": null,
+            "auprc": 0.0,
+            "label_ratio": "0:1.000",
+            "pred_ratio": "0:1.000"
+          }
+        },
+        "intact_positive": {
+          "interaction": {
+            "n": 25,
+            "acc": 0.28,
+            "balanced_acc": 0.28,
+            "precision": 1.0,
+            "recall": 0.28,
+            "specificity": null,
+            "negative_recall": null,
+            "f1": 0.4375,
+            "mcc": 0.0,
+            "tn": 0,
+            "fp": 0,
+            "fn": 18,
+            "tp": 7,
+            "auroc": null,
+            "auprc": 1.0,
+            "label_ratio": "1:1.000",
+            "pred_ratio": "0:0.720 1:0.280"
+          }
+        },
+        "negatome": {
+          "interaction": {
+            "n": 215,
+            "acc": 0.4326,
+            "balanced_acc": 0.2163,
+            "precision": 0.0,
+            "recall": 0.0,
+            "specificity": 0.4326,
+            "negative_recall": 0.4326,
+            "f1": 0.0,
+            "mcc": 0.0,
+            "tn": 93,
+            "fp": 122,
+            "fn": 0,
+            "tp": 0,
+            "auroc": null,
+            "auprc": 0.0,
+            "label_ratio": "0:1.000",
+            "pred_ratio": "0:0.433 1:0.567"
+          }
+        },
+        "ppb_affinity": {
+          "interaction": {
+            "n": 755,
+            "acc": 0.9483,
+            "balanced_acc": 0.9483,
+            "precision": 1.0,
+            "recall": 0.9483,
+            "specificity": null,
+            "negative_recall": null,
+            "f1": 0.9735,
+            "mcc": 0.0,
+            "tn": 0,
+            "fp": 0,
+            "fn": 39,
+            "tp": 716,
+            "auroc": null,
+            "auprc": 1.0,
+            "label_ratio": "1:1.000",
+            "pred_ratio": "0:0.052 1:0.948"
+          }
+        },
+        "skempi": {
+          "interaction": {
+            "n": 302,
+            "acc": 0.9967,
+            "balanced_acc": 0.9967,
+            "precision": 1.0,
+            "recall": 0.9967,
+            "specificity": null,
+            "negative_recall": null,
+            "f1": 0.9983,
+            "mcc": 0.0,
+            "tn": 0,
+            "fp": 0,
+            "fn": 1,
+            "tp": 301,
+            "auroc": null,
+            "auprc": 1.0,
+            "label_ratio": "1:1.000",
+            "pred_ratio": "0:0.003 1:0.997"
+          }
+        },
+        "string": {
+          "interaction": {
+            "n": 317,
+            "acc": 0.9274,
+            "balanced_acc": 0.9274,
+            "precision": 1.0,
+            "recall": 0.9274,
+            "specificity": null,
+            "negative_recall": null,
+            "f1": 0.9624,
+            "mcc": 0.0,
+            "tn": 0,
+            "fp": 0,
+            "fn": 23,
+            "tp": 294,
+            "auroc": null,
+            "auprc": 1.0,
+            "label_ratio": "1:1.000",
+            "pred_ratio": "0:0.073 1:0.927"
+          }
+        }
+      },
+      "calibrated_classification": {
+        "interaction": {
+          "calibration_size": 1614,
+          "threshold": 0.4,
+          "acc": 0.8774,
+          "balanced_acc": 0.6826,
+          "precision": 0.9133,
+          "recall": 0.9485,
+          "specificity": 0.4167,
+          "negative_recall": 0.4167,
+          "f1": 0.9306,
+          "mcc": 0.4138,
+          "tn": 90,
+          "fp": 126,
+          "fn": 72,
+          "tp": 1327,
+          "auroc": 0.8353,
+          "auprc": 0.9575,
+          "label_ratio": "0:0.134 1:0.866",
+          "pred_ratio": "0:0.100 1:0.900",
+          "n": 1615,
+          "calibration_split": "validation"
+        }
+      },
+      "provenance": {
+        "source": "README.md",
+        "train_log_version": "2026-08-13",
+        "imported_at": "2026-10-06T22:10:44+00:00",
+        "metric_decimal_places": 4,
+        "kind": "historical_report"
+      }
+    }
+  },
+  "training": {
+    "best_selection_metric": 0.8965370502834737,
+    "best_task_report": {
+      "acc": 0.8946716232961586,
+      "balanced_accuracy": 0.8061119058973136,
+      "specificity": 0.6851851851851852,
+      "negative_recall": 0.6851851851851852,
+      "mcc": 0.576120712073475,
+      "f1": 0.9384503982621288,
+      "auroc": 0.8965370502834737,
+      "tn": 148,
+      "fp": 68,
+      "fn": 102,
+      "tp": 1296
+    }
+  }
+}
