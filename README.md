@@ -344,6 +344,8 @@ Although the machine learning architecture is substantially different, the overa
 
 
 ## Train Log
+Compatible historical classification tables are stored inside their corresponding local checkpoints; use `python summarize_checkpoints.py` to compare runs or add `--json` to inspect source-specific results. Imported reports retain the published four-decimal precision and record their README provenance. Older classification formats and regression reports remain below for reference.
+
 ### Version 2026-07-13
 #### Changes
 - Switched tokenization from a random row split to a cluster-disjoint split to reduce sequence/homology leakage across train, validation, and test.
@@ -413,13 +415,14 @@ affinity  1042   0.7669  1.1370     6.8773     0.9073    1.8411  2.3983  0.0077 
 - Added source-normalized affinity training/reporting to test whether PPB-Affinity and SKEMPI should be normalized separately before regression.
 #### Results
 - Interaction classification improved in the intended direction: calibrated test balanced accuracy increased and the model now predicts negatives at a realistic rate instead of collapsing to nearly all-positive predictions.
-- Calibrated test interaction metrics were `AUROC=0.9233`, `AUPRC=0.9871`, `balanced_acc=0.7324`, `specificity=0.5370`, and `MCC=0.4638`.
 - Negatome negative handling improved materially on the test split: `152/216` negatives were correctly predicted (`specificity=0.7037` for the uncalibrated source-specific row).
 - Affinity remains weak overall. Source-specific test ranking is better for SKEMPI (`Pearson=0.4555`, `Spearman=0.5930`) than PPB-Affinity (`Pearson=0.2416`, `Spearman=0.2549`).
 - Source-normalized affinity regression did not solve the regression problem: source-normalized test `Pearson=0.2450`, `Spearman=0.2712`, and `R2=0.0011`.
 - Conclusion: keep the negative-aware interaction training changes, but treat source-normalized affinity training as experimental. The next affinity run should likely keep Huber loss but return to global pKd normalization, then consider separate PPB/SKEMPI heads if source bias remains large.
 
 #### Validation Split
+Calibrated interaction metrics are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-07-18_seed_1.pt) under `evaluation["splits"]["validation"]`.
+
 ```
 Source-Specific Classification Tasks
 source           task         n    acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn  tp   auroc  auprc   label_ratio  pred_ratio
@@ -442,11 +445,6 @@ task      n     label_mean  label_std  pred_mean  pred_std  mae     rmse    pear
 --------  ----  ----------  ---------  ---------  --------  ------  ------  -------  --------  ------
 affinity  1042  -0.0000     1.0000     0.1925     0.4650    0.8172  0.9990  0.2746   0.3027    0.0021
 
-Checkpoint Classification Calibration Applied
-task         cal_n  thr     acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp   fn  tp    auroc   auprc   label_ratio      pred_ratio
------------  -----  ------  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  ---  --  ----  ------  ------  ---------------  ---------------
-interaction  1611   0.0700  0.9162  0.7501   0.9297     0.9771  0.5231       0.5231      0.9528  0.5955  113  103  32  1363  0.8911  0.9713  0:0.134 1:0.866  0:0.090 1:0.910
-
 Checkpoint Regression Calibration Applied
 task      cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
 --------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  ------
@@ -454,6 +452,8 @@ affinity  1042   0.6439  2.2642     7.0138     0.5706    1.4919  1.8961  0.2884 
 ```
 
 #### Test Split
+Calibrated interaction metrics are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-07-18_seed_1.pt) under `evaluation["splits"]["test"]`.
+
 ```
 Source-Specific Classification Tasks
 source           task         n    acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn   tp   auroc  auprc   label_ratio  pred_ratio
@@ -475,11 +475,6 @@ task      n     label_mean  label_std  pred_mean  pred_std  mae     rmse    pear
 --------  ----  ----------  ---------  ---------  --------  ------  ------  -------  --------  ------
 affinity  1042  -0.0000     1.0000     0.0292     0.4860    0.7869  0.9995  0.2450   0.2712    0.0011
 
-Checkpoint Classification Calibration Applied
-task         cal_n  thr     acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp   fn   tp    auroc   auprc   label_ratio      pred_ratio
------------  -----  ------  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  ---  ---  ----  ------  ------  ---------------  ---------------
-interaction  1611   0.0700  0.8754  0.7324   0.9284     0.9277  0.5370       0.5370      0.9280  0.4638  116  100  101  1296  0.9233  0.9871  0:0.134 1:0.866  0:0.135 1:0.865
-
 Checkpoint Regression Calibration Applied
 task      cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
 --------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  ------
@@ -493,20 +488,15 @@ affinity  1042   0.6439  2.2642     7.1132     0.5861    1.6253  2.1122  0.2407 
 - Reverted affinity normalization from source-normalized pKd back to global pKd normalization (`AFFINITY_NORMALIZATION = "global"`) after the 2026-07-18 run showed weak source-normalized affinity performance.
 
 #### Results
-- Interaction classification improved again under calibrated thresholding. On the test split, calibrated `balanced_acc=0.8868`, `specificity=0.8796`, `MCC=0.6474`, `AUROC=0.9408`, and `AUPRC=0.9883`.
-- The calibrated test prediction ratio (`0:0.210 1:0.790`) is much healthier than the early all-positive failure mode, and Negatome handling improved to `185/216` true negatives in the source-specific test row.
+- Interaction classification improved again under calibrated thresholding.
+- The calibrated test prediction ratio is much healthier than the early all-positive failure mode, and Negatome handling improved in the source-specific test row.
 - Affinity regression remains unresolved. Validation affinity has moderate signal (`Pearson=0.3121`) but test affinity ranking is essentially absent (`Pearson=0.0227`, `Spearman=0.0249`; calibrated `R2=-0.1243`).
 - Global pKd normalization did not recover affinity performance. The next affinity-specific direction should likely be separate PPB/SKEMPI heads, stronger source-aware modeling, or revisiting the affinity data/split rather than more normalization changes.
 
 #### Validation Split
+Aggregate and calibrated interaction metrics are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-07-19_seed_1.pt) under `evaluation["splits"]["validation"]`.
+
 ```
-Dataset size (validation): 1611 pairs
-
-Classification Tasks
-task         n     acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp   fn  tp    auroc   auprc   label_ratio      pred_ratio
------------  ----  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  ---  --  ----  ------  ------  ---------------  ---------------
-interaction  1611  0.9081  0.7376   0.9268     0.9706  0.5046       0.5046      0.9482  0.5573  109  107  41  1354  0.8793  0.9699  0:0.134 1:0.866  0:0.093 1:0.907
-
 Regression Tasks
 task      n     label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
 --------  ----  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
@@ -533,11 +523,6 @@ task      n     label_mean  label_std  pred_mean  pred_std  mae     rmse    pear
 --------  ----  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
 affinity  1042  -0.0000     1.0000     0.3294     0.5880    0.8633  1.0415  0.3142   0.3257    -0.0848
 
-Checkpoint Classification Calibration Applied
-task         cal_n  thr     acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn  tp    auroc   auprc   label_ratio      pred_ratio
------------  -----  ------  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  --  ----  ------  ------  ---------------  ---------------
-interaction  1611   0.6700  0.9106  0.7664   0.9353     0.9634  0.5694       0.5694      0.9492  0.5850  123  93  51  1344  0.8793  0.9699  0:0.134 1:0.866  0:0.108 1:0.892
-
 Checkpoint Regression Calibration Applied
 task      cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
 --------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  ------
@@ -545,14 +530,9 @@ affinity  1042   0.6030  2.4132     7.0144     0.6186    1.4967  1.8813  0.3121 
 ```
 
 #### Test Split
+Aggregate and calibrated interaction metrics are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-07-19_seed_1.pt) under `evaluation["splits"]["test"]`.
+
 ```
-Dataset size (test): 1613 pairs
-
-Classification Tasks
-task         n     acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn   tp    auroc   auprc   label_ratio      pred_ratio
------------  ----  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  ---  ----  ------  ------  ---------------  ---------------
-interaction  1613  0.8940  0.8781   0.9759     0.8998  0.8565       0.8565      0.9363  0.6421  185  31  140  1257  0.9408  0.9883  0:0.134 1:0.866  0:0.201 1:0.799
-
 Regression Tasks
 task      n     label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
 --------  ----  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
@@ -577,11 +557,6 @@ Source-Normalized Regression Tasks
 task      n     label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
 --------  ----  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
 affinity  1042  -0.0000     1.0000     0.0139     0.4768    0.8523  1.0932  0.0340   0.0575    -0.1951
-
-Checkpoint Classification Calibration Applied
-task         cal_n  thr     acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn   tp    auroc   auprc   label_ratio      pred_ratio
------------  -----  ------  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  ---  ----  ------  ------  ---------------  ---------------
-interaction  1611   0.6700  0.8921  0.8868   0.9796     0.8941  0.8796       0.8796      0.9349  0.6474  190  26  148  1249  0.9408  0.9883  0:0.134 1:0.866  0:0.210 1:0.790
 
 Checkpoint Regression Calibration Applied
 task      cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
@@ -617,35 +592,22 @@ python train.py
 ```
 
 #### Results
-- Interaction validation improved relative to the previous run: uncalibrated `AUROC=0.9387`, `AUPRC=0.9893`, `balanced_acc=0.8274`, `specificity=0.7130`, and `MCC=0.6322`.
-- Calibrated interaction validation was similar but shifted toward higher recall: `balanced_acc=0.8015`, `specificity=0.6389`, `MCC=0.6400`, and `F1=0.9546`.
+- Interaction validation improved relative to the previous run.
+- Calibrated interaction validation was similar but shifted toward higher recall.
 - Source-specific affinity heads helped SKEMPI more than PPB-Affinity. SKEMPI validation reached `Pearson=0.5427`, `Spearman=0.5777`, and calibrated `R2=0.2945`; PPB-Affinity remained weak with `Pearson=0.1317`, `Spearman=0.0918`, and calibrated `R2=0.0174`.
-- Test interaction performance remains strong: uncalibrated `AUROC=0.9515`, `AUPRC=0.9918`, `balanced_acc=0.8658`, `specificity=0.8611`, and calibrated `balanced_acc=0.8190`.
+- Test interaction performance remains strong.
 - Affinity did not generalize. PPB-Affinity stayed weak on test (`Pearson=0.0954`, `Spearman=0.1038`, calibrated `R2=0.0047`) and SKEMPI collapsed despite good validation performance (`Pearson=-0.0434`, `Spearman=-0.0755`, calibrated `R2=-0.4946`).
 - Main readout: keep the interaction setup, but do not treat the source-specific affinity-head experiment as successful. The affinity problem likely needs data/split investigation or a source-specific architecture/training regime beyond just separate heads.
 
 #### Validation Split
-```
-Classification Tasks
-task         n     acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn  tp    auroc   auprc   label_ratio      pred_ratio
------------  ----  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  --  ----  ------  ------  ---------------  ---------------
-interaction  1611  0.9112  0.8274   0.9549     0.9419  0.7130       0.7130      0.9484  0.6322  154  62  81  1314  0.9387  0.9893  0:0.134 1:0.866  0:0.146 1:0.854
+Classification metrics are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-08-12_seed_1.pt) under `evaluation["splits"]["validation"]`.
 
+```
 Regression Tasks
 task                   n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
 ---------------------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
 affinity_ppb_affinity  748  7.2421      2.0063     7.3945     0.9290    1.6700  2.1025  0.1317   0.0918    -0.0982
 affinity_skempi        294  6.4336      1.7855     6.8218     1.3400    1.3053  1.5929  0.5427   0.5777    0.2041
-
-Source-Specific Classification Tasks
-source           task         n    acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn  tp   auroc  auprc   label_ratio  pred_ratio
----------------  -----------  ---  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  --  ---  -----  ------  -----------  ---------------
-intact_negative  interaction  1    1.0000  0.5000   0.0000     0.0000  1.0000       1.0000      0.0000  0.0000  1    0   0   0    -      0.0000  0:1.000      0:1.000
-intact_positive  interaction  27   0.1852  0.1852   1.0000     0.1852  -            -           0.3125  0.0000  0    0   22  5    -      1.0000  1:1.000      0:0.815 1:0.185
-negatome         interaction  215  0.7116  0.3558   0.0000     0.0000  0.7116       0.7116      0.0000  0.0000  153  62  0   0    -      0.0000  0:1.000      0:0.712 1:0.288
-ppb_affinity     interaction  748  0.9733  0.9733   1.0000     0.9733  -            -           0.9864  0.0000  0    0   20  728  -      1.0000  1:1.000      0:0.027 1:0.973
-skempi           interaction  306  1.0000  1.0000   1.0000     1.0000  -            -           1.0000  0.0000  0    0   0   306  -      1.0000  1:1.000      1:1.000
-string           interaction  314  0.8758  0.8758   1.0000     0.8758  -            -           0.9338  0.0000  0    0   39  275  -      1.0000  1:1.000      0:0.124 1:0.876
 
 Source-Specific Regression Tasks
 source        task                   n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
@@ -659,11 +621,6 @@ task                   n    label_mean  label_std  pred_mean  pred_std  mae     
 affinity_ppb_affinity  748  -0.0000     1.0000     0.0760     0.4630    0.8323  1.0479  0.1317   0.0918    -0.0982
 affinity_skempi        294  0.0000      1.0000     0.2174     0.7505    0.7311  0.8921  0.5427   0.5777    0.2041
 
-Checkpoint Classification Calibration Applied
-task         cal_n  thr     acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn  tp    auroc   auprc   label_ratio      pred_ratio
------------  -----  ------  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  --  ----  ------  ------  ---------------  ---------------
-interaction  1611   0.0900  0.9205  0.8015   0.9452     0.9642  0.6389       0.6389      0.9546  0.6400  138  78  50  1345  0.9387  0.9893  0:0.134 1:0.866  0:0.117 1:0.883
-
 Checkpoint Regression Calibration Applied
 task                   cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
 ---------------------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  ------
@@ -672,26 +629,14 @@ affinity_skempi        294    0.7234  1.4996     6.4344     0.9693    1.1558  1.
 ```
 
 #### Test Split
-```
-Classification Tasks
-task         n     acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn   tp    auroc   auprc   label_ratio      pred_ratio
------------  ----  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  ---  ----  ------  ------  ---------------  ---------------
-interaction  1613  0.8692  0.8658   0.9759     0.8704  0.8611       0.8611      0.9202  0.5943  186  30  181  1216  0.9515  0.9918  0:0.134 1:0.866  0:0.228 1:0.772
+Classification metrics are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-08-12_seed_1.pt) under `evaluation["splits"]["test"]`.
 
+```
 Regression Tasks
 task                   n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
 ---------------------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
 affinity_ppb_affinity  761  7.3170      2.0450     7.3219     1.0303    1.7415  2.2004  0.0954   0.1038    -0.1577
 affinity_skempi        281  7.9862      2.3037     6.9642     0.8739    2.0548  2.7000  -0.0434  -0.0755   -0.3736
-
-Source-Specific Classification Tasks
-source           task         n    acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn   tp   auroc  auprc   label_ratio  pred_ratio
----------------  -----------  ---  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  ---  ---  -----  ------  -----------  ---------------
-intact_positive  interaction  22   0.1818  0.1818   1.0000     0.1818  -            -           0.3077  0.0000  0    0   18   4    -      1.0000  1:1.000      0:0.818 1:0.182
-negatome         interaction  216  0.8611  0.4306   0.0000     0.0000  0.8611       0.8611      0.0000  0.0000  186  30  0    0    -      0.0000  0:1.000      0:0.861 1:0.139
-ppb_affinity     interaction  761  0.8476  0.8476   1.0000     0.8476  -            -           0.9175  0.0000  0    0   116  645  -      1.0000  1:1.000      0:0.152 1:0.848
-skempi           interaction  300  0.9600  0.9600   1.0000     0.9600  -            -           0.9796  0.0000  0    0   12   288  -      1.0000  1:1.000      0:0.040 1:0.960
-string           interaction  314  0.8885  0.8885   1.0000     0.8885  -            -           0.9410  0.0000  0    0   35   279  -      1.0000  1:1.000      0:0.111 1:0.889
 
 Source-Specific Regression Tasks
 source        task                   n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
@@ -704,11 +649,6 @@ task                   n    label_mean  label_std  pred_mean  pred_std  mae     
 ---------------------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
 affinity_ppb_affinity  761  -0.0000     1.0000     0.0024     0.5038    0.8515  1.0760  0.0954   0.1038    -0.1577
 affinity_skempi        281  0.0000      1.0000     -0.4436    0.3793    0.8919  1.1720  -0.0434  -0.0755   -0.3736
-
-Checkpoint Classification Calibration Applied
-task         cal_n  thr     acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn   tp    auroc   auprc   label_ratio      pred_ratio
------------  -----  ------  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  ---  ----  ------  ------  ---------------  ---------------
-interaction  1611   0.0900  0.8797  0.8190   0.9567     0.9019  0.7361       0.7361      0.9285  0.5614  159  57  137  1260  0.9515  0.9918  0:0.134 1:0.866  0:0.184 1:0.816
 
 Checkpoint Regression Calibration Applied
 task                   cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
@@ -740,60 +680,13 @@ python train.py
 ```
 
 #### Results
-- Validation classification remained reasonable after removing downstream affinity: `AUROC=0.8964`, `AUPRC=0.9775`, `balanced_acc=0.8079`, `specificity=0.6852`, and `MCC=0.5843`.
-- Test classification was weaker than the 2026-08-12 multitask/source-specific-affinity run: `AUROC=0.8353`, `AUPRC=0.9575`, `balanced_acc=0.6886`, `specificity=0.4352`, and `MCC=0.4131`.
-- Calibrating the threshold on validation did not recover test negative handling: calibrated test `balanced_acc=0.6826`, `specificity=0.4167`, and `MCC=0.4138`.
+- Validation classification remained reasonable after removing downstream affinity.
+- Test classification was weaker than the 2026-08-12 multitask/source-specific-affinity run.
+- Calibrating the threshold on validation did not recover test negative handling.
 - Main readout: removing affinity simplifies the code and creates the intended clean baseline, but the interaction-only run has worse test negative recall than the previous setup. The next pooling ablations should be compared against this baseline, not assumed to improve it.
 
 #### Validation Split
-```
-Dataset size (validation): 1614 pairs
-Checkpoint: checkpoints/prostt5_group_pair_adapter_best_2026-08-13_seed_1.pt
-Cache: data/tokenized/interaction_group_pair_prostt5_tokens.pt
-
-Classification Tasks
-task         n     acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn  tp    auroc   auprc   label_ratio      pred_ratio
------------  ----  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  --  ----  ------  ------  ---------------  ---------------
-interaction  1614  0.8978  0.8079   0.9503     0.9306  0.6852       0.6852      0.9404  0.5843  148  68  97  1301  0.8964  0.9775  0:0.134 1:0.866  0:0.152 1:0.848
-
-Source-Specific Classification Tasks
-source           task         n    acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn  tp   auroc  auprc   label_ratio  pred_ratio
----------------  -----------  ---  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  --  ---  -----  ------  -----------  ---------------
-intact_positive  interaction  24   0.2500  0.2500   1.0000     0.2500  -            -           0.4000  0.0000  0    0   18  6    -      1.0000  1:1.000      0:0.750 1:0.250
-negatome         interaction  216  0.6852  0.3426   0.0000     0.0000  0.6852       0.6852      0.0000  0.0000  148  68  0   0    -      0.0000  0:1.000      0:0.685 1:0.315
-ppb_affinity     interaction  754  0.9324  0.9324   1.0000     0.9324  -            -           0.9650  0.0000  0    0   51  703  -      1.0000  1:1.000      0:0.068 1:0.932
-skempi           interaction  304  0.9605  0.9605   1.0000     0.9605  -            -           0.9799  0.0000  0    0   12  292  -      1.0000  1:1.000      0:0.039 1:0.961
-string           interaction  316  0.9494  0.9494   1.0000     0.9494  -            -           0.9740  0.0000  0    0   16  300  -      1.0000  1:1.000      0:0.051 1:0.949
-
-Checkpoint Classification Calibration Applied
-task         cal_n  thr     acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn  tp    auroc   auprc   label_ratio      pred_ratio
------------  -----  ------  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  --  ----  ------  ------  ---------------  ---------------
-interaction  1614   0.4000  0.9095  0.8088   0.9491     0.9464  0.6713       0.6713      0.9477  0.6129  145  71  75  1323  0.8964  0.9775  0:0.134 1:0.866  0:0.136 1:0.864
-```
+Classification metrics are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-08-13_seed_1.pt) under `evaluation["splits"]["validation"]`.
 
 #### Test Split
-```
-Dataset size (test): 1615 pairs
-Checkpoint: checkpoints/prostt5_group_pair_adapter_best_2026-08-13_seed_1.pt
-Cache: data/tokenized/interaction_group_pair_prostt5_tokens.pt
-
-Classification Tasks
-task         n     acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn  fp   fn  tp    auroc   auprc   label_ratio      pred_ratio
------------  ----  ------  -------  ---------  ------  -----------  ----------  ------  ------  --  ---  --  ----  ------  ------  ---------------  ---------------
-interaction  1615  0.8743  0.6886   0.9153     0.9421  0.4352       0.4352      0.9285  0.4131  94  122  81  1318  0.8353  0.9575  0:0.134 1:0.866  0:0.108 1:0.892
-
-Source-Specific Classification Tasks
-source           task         n    acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn  fp   fn  tp   auroc  auprc   label_ratio  pred_ratio
----------------  -----------  ---  ------  -------  ---------  ------  -----------  ----------  ------  ------  --  ---  --  ---  -----  ------  -----------  ---------------
-intact_negative  interaction  1    1.0000  0.5000   0.0000     0.0000  1.0000       1.0000      0.0000  0.0000  1   0    0   0    -      0.0000  0:1.000      0:1.000
-intact_positive  interaction  25   0.2800  0.2800   1.0000     0.2800  -            -           0.4375  0.0000  0   0    18  7    -      1.0000  1:1.000      0:0.720 1:0.280
-negatome         interaction  215  0.4326  0.2163   0.0000     0.0000  0.4326       0.4326      0.0000  0.0000  93  122  0   0    -      0.0000  0:1.000      0:0.433 1:0.567
-ppb_affinity     interaction  755  0.9483  0.9483   1.0000     0.9483  -            -           0.9735  0.0000  0   0    39  716  -      1.0000  1:1.000      0:0.052 1:0.948
-skempi           interaction  302  0.9967  0.9967   1.0000     0.9967  -            -           0.9983  0.0000  0   0    1   301  -      1.0000  1:1.000      0:0.003 1:0.997
-string           interaction  317  0.9274  0.9274   1.0000     0.9274  -            -           0.9624  0.0000  0   0    23  294  -      1.0000  1:1.000      0:0.073 1:0.927
-
-Checkpoint Classification Calibration Applied
-task         cal_n  thr     acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn  fp   fn  tp    auroc   auprc   label_ratio      pred_ratio
------------  -----  ------  ------  -------  ---------  ------  -----------  ----------  ------  ------  --  ---  --  ----  ------  ------  ---------------  ---------------
-interaction  1614   0.4000  0.8774  0.6826   0.9133     0.9485  0.4167       0.4167      0.9306  0.4138  90  126  72  1327  0.8353  0.9575  0:0.134 1:0.866  0:0.100 1:0.900
-```
+Classification metrics are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-08-13_seed_1.pt) under `evaluation["splits"]["test"]`.
