@@ -61,6 +61,18 @@ def summary_rows(summary):
       report = result.get(key, {}).get("interaction")
       if report is not None:
         yield _row(summary, split, mode, report)
+      else:
+        title = "Classification Tasks" if mode == "raw" else "Checkpoint Classification Calibration Applied"
+        historical = result.get("historical_reports", {}).get(title, {})
+        for row in historical.get("rows", []):
+          if row.get("task") != "interaction":
+            continue
+          report = dict(row)
+          report["balanced_acc"] = row.get("bal_acc")
+          report["threshold"] = row.get("thr")
+          # Calibration count describes validation, not the evaluated test set.
+          report.setdefault("n", result.get("dataset_size"))
+          yield _row(summary, split, f"historical-{mode}", report)
 
 
 def _row(summary, split, mode, report):
@@ -76,6 +88,7 @@ def main():
   parser = argparse.ArgumentParser(description=__doc__)
   parser.add_argument("paths", nargs="*", default=["checkpoints"], help="Checkpoint files or directories (default: checkpoints/).")
   parser.add_argument("--json", action="store_true", help="Print full saved evaluation metadata as JSON, including source reports.")
+  parser.add_argument("--historical", action="store_true", help="Also print archived tables and original train-log notes, including regression.")
   args = parser.parse_args()
   try:
     paths = find_checkpoints(args.paths)
@@ -102,6 +115,15 @@ def main():
       print("  ".join(cell.ljust(width) for cell, width in zip(row, widths)))
   else:
     print("No checkpoints found.")
+  if args.historical and not args.json:
+    for summary in summaries:
+      evaluation = summary["evaluation"]
+      notes = evaluation.get("historical_train_log", {}).get("results_notes")
+      if notes:
+        print(f"\n{Path(summary['checkpoint']).name}: Historical Train Log\n{notes}")
+      for split, result in evaluation.get("splits", {}).items():
+        for table in result.get("historical_reports", {}).values():
+          print(f"\n{Path(summary['checkpoint']).name}: {split} (historical definitions)\n{table['raw_table']}")
   return 1 if errors else 0
 
 

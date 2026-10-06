@@ -228,9 +228,13 @@ def evaluate_checkpoint(checkpoint_path, cache_path=DEFAULT_CACHE_PATH, splits=(
   evaluation["schema_version"] = 1
   split_results = dict(evaluation.get("splits", {}))
   for split in splits:
-    split_results[split] = _evaluate_split(
+    result = _evaluate_split(
       model, payload, embedding_cache, checkpoint, checkpoint_path, cache_path, split, batch_size,
     )
+    historical = split_results.get(split, {}).get("historical_reports")
+    if historical:
+      result["historical_reports"] = historical
+    split_results[split] = result
   evaluation["splits"] = split_results
   checkpoint["evaluation"] = evaluation
   # Write only once both splits succeed, so a failed run leaves the weights intact.

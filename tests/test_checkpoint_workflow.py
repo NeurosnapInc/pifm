@@ -126,6 +126,31 @@ class CheckpointWorkflowTests(unittest.TestCase):
     self.assertEqual(rows[0][3], "training-best")
     self.assertEqual(rows[1][3], "not evaluated")
 
+  def test_reevaluation_preserves_historical_reports_and_notes(self):
+    archive = {"Regression Tasks": {"raw_table": "Original historical table", "rows": []}}
+    notes = {"results_notes": "Original result notes"}
+    self.checkpoint["evaluation"] = {
+      "splits": {"validation": {"historical_reports": archive}}, "historical_train_log": notes,
+    }
+    save_checkpoint(self.checkpoint, self.path)
+    saved = self.evaluate(model=self.model, embedding_cache=self.embeddings)
+    self.assertEqual(saved["evaluation"]["splits"]["validation"]["historical_reports"], archive)
+    self.assertEqual(saved["evaluation"]["historical_train_log"], notes)
+
+  def test_historical_summary_preserves_missing_fields_and_test_size(self):
+    self.checkpoint["evaluation"] = {"splits": {"test": {
+      "dataset_size": 4,
+      "historical_reports": {"Checkpoint Classification Calibration Applied": {"rows": [
+        {"task": "interaction", "cal_n": 3, "thr": 0.4, "bal_acc": 0.7, "auroc": 0.8},
+      ]}},
+    }}}
+    save_checkpoint(self.checkpoint, self.path)
+    rows = list(summary_rows(checkpoint_summary(self.path)))
+    self.assertEqual(rows[1][3], "historical-calibrated")
+    self.assertEqual(rows[1][4], "4")
+    self.assertEqual(rows[1][8], "0.7000")
+    self.assertEqual(rows[1][9], "-")
+
 
 if __name__ == "__main__":
   unittest.main()

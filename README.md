@@ -344,7 +344,7 @@ Although the machine learning architecture is substantially different, the overa
 
 
 ## Train Log
-Compatible historical classification tables are stored inside their corresponding local checkpoints; use `python summarize_checkpoints.py` to compare runs or add `--json` to inspect source-specific results. Imported reports retain the published four-decimal precision and record their README provenance. Older classification formats and regression reports remain below for reference.
+All historical result tables are stored inside their corresponding local checkpoints. Use `python summarize_checkpoints.py` to compare runs, `--historical` to print archived tables and original result notes, or `--json` to inspect the full metadata. Compatible classification reports use the current evaluation fields; older classification and regression tables live in each split's `historical_reports`, with original columns, structured rows, and verbatim tables. Imported reports retain published four-decimal precision and README provenance; missing or undefined values are stored as null, with their original spelling preserved in the verbatim tables. Historical metrics are never recomputed under newer definitions. Re-evaluation preserves these archives.
 
 ### Version 2026-07-13
 #### Changes
@@ -355,55 +355,13 @@ Compatible historical classification tables are stored inside their correspondin
 - Increased token-capped batch sizes for A100 training throughput.
 
 #### Results
-- The affinity validation set is now large enough to interpret (`n=1042`) and the model learns a moderate affinity signal. The interaction head has good ranking signal (`AUROC=0.8828`) but poor thresholded negative detection, still predicting almost everything as positive.
+- Validation affinity had moderate signal, while the interaction head still predicted almost everything as positive.
 
 #### Validation Split
-```
-Dataset size (validation): 1611 pairs
-
-Classification Tasks
-task         n     acc     bal_acc  precision  recall  f1      auroc   auprc   label_ratio      pred_ratio
------------  ----  ------  -------  ---------  ------  ------  ------  ------  ---------------  ---------------
-interaction  1611  0.8672  0.5046   0.8670     1.0000  0.9288  0.8828  0.9781  0:0.134 1:0.866  0:0.001 1:0.999
-
-Regression Tasks
-task      n     label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
---------  ----  ----------  ---------  ---------  --------  ------  ------  -------  --------  ------
-affinity  1042  7.0140      1.9803     7.6647     1.2690    1.5393  1.8678  0.4908   0.4500    0.1104
-
-Checkpoint Classification Calibration Applied
-task         cal_n  thr     acc     bal_acc  precision  recall  f1      auroc   auprc   label_ratio      pred_ratio
------------  -----  ------  ------  -------  ---------  ------  ------  ------  ------  ---------------  ---------------
-interaction  1611   0.8700  0.8759  0.5429   0.8760     0.9978  0.9330  0.8828  0.9781  0:0.134 1:0.866  0:0.014 1:0.986
-
-Checkpoint Regression Calibration Applied
-task      cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
---------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  ------
-affinity  1042   0.7669  1.1370     7.0153     0.9732    1.3849  1.7254  0.4908   0.4500    0.2409
-```
+Results are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-07-13_seed_1.pt) under `evaluation["splits"]["validation"]`. Historical tables are preserved in `historical_reports`.
 
 #### Test Split
-```
-Classification Tasks
-task         n     acc     bal_acc  precision  recall  f1      auroc   auprc   label_ratio      pred_ratio
------------  ----  ------  -------  ---------  ------  ------  ------  ------  ---------------  ---------------
-interaction  1613  0.8772  0.5436   0.8763     0.9993  0.9338  0.9474  0.9907  0:0.134 1:0.866  0:0.012 1:0.988
-
-Regression Tasks
-task      n     label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
---------  ----  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
-affinity  1042  7.4975      2.1386     7.4847     1.1830    1.9024  2.4361  0.0077   0.0571    -0.2975
-
-Checkpoint Classification Calibration Applied
-task         cal_n  thr     acc     bal_acc  precision  recall  f1      auroc   auprc   label_ratio      pred_ratio
------------  -----  ------  ------  -------  ---------  ------  ------  ------  ------  ---------------  ---------------
-interaction  1611   0.8700  0.9033  0.6448   0.9011     0.9979  0.9470  0.9474  0.9907  0:0.134 1:0.866  0:0.041 1:0.959
-
-Checkpoint Regression Calibration Applied
-task      cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
---------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  -------
-affinity  1042   0.7669  1.1370     6.8773     0.9073    1.8411  2.3983  0.0077   0.0571    -0.2576
-```
+Results are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-07-13_seed_1.pt) under `evaluation["splits"]["test"]`. Historical tables are preserved in `historical_reports`.
 
 ### Version 2026-07-18
 #### Changes
@@ -414,72 +372,13 @@ affinity  1042   0.7669  1.1370     6.8773     0.9073    1.8411  2.3983  0.0077 
 - Switched affinity regression from MSE to Huber loss for more robustness to noisy/outlier pKd labels.
 - Added source-normalized affinity training/reporting to test whether PPB-Affinity and SKEMPI should be normalized separately before regression.
 #### Results
-- Interaction classification improved in the intended direction: calibrated test balanced accuracy increased and the model now predicts negatives at a realistic rate instead of collapsing to nearly all-positive predictions.
-- Negatome negative handling improved materially on the test split: `152/216` negatives were correctly predicted (`specificity=0.7037` for the uncalibrated source-specific row).
-- Affinity remains weak overall. Source-specific test ranking is better for SKEMPI (`Pearson=0.4555`, `Spearman=0.5930`) than PPB-Affinity (`Pearson=0.2416`, `Spearman=0.2549`).
-- Source-normalized affinity regression did not solve the regression problem: source-normalized test `Pearson=0.2450`, `Spearman=0.2712`, and `R2=0.0011`.
-- Conclusion: keep the negative-aware interaction training changes, but treat source-normalized affinity training as experimental. The next affinity run should likely keep Huber loss but return to global pKd normalization, then consider separate PPB/SKEMPI heads if source bias remains large.
+- Negative-aware training improved interaction classification and Negatome handling. Source-normalized affinity training remained weak; retain the interaction changes and revisit affinity modeling.
 
 #### Validation Split
-Calibrated interaction metrics are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-07-18_seed_1.pt) under `evaluation["splits"]["validation"]`.
-
-```
-Source-Specific Classification Tasks
-source           task         n    acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn  tp   auroc  auprc   label_ratio  pred_ratio
----------------  -----------  ---  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  --  ---  -----  ------  -----------  ---------------
-intact_negative  interaction  1    1.0000  1.0000   0.0000     0.0000  1.0000       1.0000      0.0000  0.0000  1    0   0   0    nan    0.0000  0:1.000      0:1.000
-intact_positive  interaction  27   0.1481  0.1481   1.0000     0.1481  -            -           0.2581  0.0000  0    0   23  4    nan    1.0000  1:1.000      0:0.852 1:0.148
-negatome         interaction  215  0.6279  0.6279   0.0000     0.0000  0.6279       0.6279      0.0000  0.0000  135  80  0   0    nan    0.0000  0:1.000      0:0.628 1:0.372
-ppb_affinity     interaction  748  0.9759  0.9759   1.0000     0.9759  -            -           0.9878  0.0000  0    0   18  730  nan    1.0000  1:1.000      0:0.024 1:0.976
-skempi           interaction  306  1.0000  1.0000   1.0000     1.0000  -            -           1.0000  0.0000  0    0   0   306  nan    1.0000  1:1.000      1:1.000
-string           interaction  314  0.9268  0.9268   1.0000     0.9268  -            -           0.9620  0.0000  0    0   23  291  nan    1.0000  1:1.000      0:0.073 1:0.927
-
-Source-Specific Regression Tasks
-source        task      n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
-------------  --------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
-ppb_affinity  affinity  748  7.2421      2.0063     7.4813     0.8647    1.6852  2.0780  0.1476   0.1423    -0.0727
-skempi        affinity  294  6.4336      1.7855     7.1102     0.8845    1.3561  1.6045  0.5869   0.6298    0.1924
-
-Source-Normalized Regression Tasks
-task      n     label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
---------  ----  ----------  ---------  ---------  --------  ------  ------  -------  --------  ------
-affinity  1042  -0.0000     1.0000     0.1925     0.4650    0.8172  0.9990  0.2746   0.3027    0.0021
-
-Checkpoint Regression Calibration Applied
-task      cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
---------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  ------
-affinity  1042   0.6439  2.2642     7.0138     0.5706    1.4919  1.8961  0.2884   0.2590    0.0832
-```
+Results are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-07-18_seed_1.pt) under `evaluation["splits"]["validation"]`. Historical tables are preserved in `historical_reports`.
 
 #### Test Split
-Calibrated interaction metrics are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-07-18_seed_1.pt) under `evaluation["splits"]["test"]`.
-
-```
-Source-Specific Classification Tasks
-source           task         n    acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn   tp   auroc  auprc   label_ratio  pred_ratio
----------------  -----------  ---  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  ---  ---  -----  ------  -----------  ---------------
-intact_positive  interaction  22   0.1364  0.1364   1.0000     0.1364  -            -           0.2400  0.0000  0    0   19   3    nan    1.0000  1:1.000      0:0.864 1:0.136
-negatome         interaction  216  0.7037  0.7037   0.0000     0.0000  0.7037       0.7037      0.0000  0.0000  152  64  0    0    nan    0.0000  0:1.000      0:0.704 1:0.296
-ppb_affinity     interaction  761  0.8489  0.8489   1.0000     0.8489  -            -           0.9183  0.0000  0    0   115  646  nan    1.0000  1:1.000      0:0.151 1:0.849
-skempi           interaction  300  1.0000  1.0000   1.0000     1.0000  -            -           1.0000  0.0000  0    0   0    300  nan    1.0000  1:1.000      1:1.000
-string           interaction  314  0.9777  0.9777   1.0000     0.9777  -            -           0.9887  0.0000  0    0   7    307  nan    1.0000  1:1.000      0:0.022 1:0.978
-
-Source-Specific Regression Tasks
-source        task      n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
-------------  --------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
-ppb_affinity  affinity  761  7.3170      2.0450     7.6825     0.9183    1.6317  2.0620  0.2416   0.2549    -0.0166
-skempi        affinity  281  7.9862      2.3037     7.1203     0.7470    1.7440  2.2466  0.4555   0.5930    0.0490
-
-Source-Normalized Regression Tasks
-task      n     label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
---------  ----  ----------  ---------  ---------  --------  ------  ------  -------  --------  ------
-affinity  1042  -0.0000     1.0000     0.0292     0.4860    0.7869  0.9995  0.2450   0.2712    0.0011
-
-Checkpoint Regression Calibration Applied
-task      cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
---------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  ------
-affinity  1042   0.6439  2.2642     7.1132     0.5861    1.6253  2.1122  0.2407   0.2844    0.0245
-```
+Results are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-07-18_seed_1.pt) under `evaluation["splits"]["test"]`. Historical tables are preserved in `historical_reports`.
 
 ### Version 2026-07-19
 #### Changes
@@ -488,81 +387,13 @@ affinity  1042   0.6439  2.2642     7.1132     0.5861    1.6253  2.1122  0.2407 
 - Reverted affinity normalization from source-normalized pKd back to global pKd normalization (`AFFINITY_NORMALIZATION = "global"`) after the 2026-07-18 run showed weak source-normalized affinity performance.
 
 #### Results
-- Interaction classification improved again under calibrated thresholding.
-- The calibrated test prediction ratio is much healthier than the early all-positive failure mode, and Negatome handling improved in the source-specific test row.
-- Affinity regression remains unresolved. Validation affinity has moderate signal (`Pearson=0.3121`) but test affinity ranking is essentially absent (`Pearson=0.0227`, `Spearman=0.0249`; calibrated `R2=-0.1243`).
-- Global pKd normalization did not recover affinity performance. The next affinity-specific direction should likely be separate PPB/SKEMPI heads, stronger source-aware modeling, or revisiting the affinity data/split rather than more normalization changes.
+- Interaction classification improved with calibrated thresholding. Global affinity normalization did not recover test performance; separate source-specific modeling or data/split investigation was needed.
 
 #### Validation Split
-Aggregate and calibrated interaction metrics are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-07-19_seed_1.pt) under `evaluation["splits"]["validation"]`.
-
-```
-Regression Tasks
-task      n     label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
---------  ----  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
-affinity  1042  7.0140      1.9803     7.6303     1.0259    1.6739  2.0213  0.3121   0.2761    -0.0418
-
-Source-Specific Classification Tasks
-source           task         n    acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp   fn  tp   auroc  auprc   label_ratio  pred_ratio
----------------  -----------  ---  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  ---  --  ---  -----  ------  -----------  ---------------
-intact_negative  interaction  1    1.0000  1.0000   0.0000     0.0000  1.0000       1.0000      0.0000  0.0000  1    0    0   0    nan    0.0000  0:1.000      0:1.000
-intact_positive  interaction  27   0.3333  0.3333   1.0000     0.3333  -            -           0.5000  0.0000  0    0    18  9    nan    1.0000  1:1.000      0:0.667 1:0.333
-negatome         interaction  215  0.5023  0.5023   0.0000     0.0000  0.5023       0.5023      0.0000  0.0000  108  107  0   0    nan    0.0000  0:1.000      0:0.502 1:0.498
-ppb_affinity     interaction  748  0.9759  0.9759   1.0000     0.9759  -            -           0.9878  0.0000  0    0    18  730  nan    1.0000  1:1.000      0:0.024 1:0.976
-skempi           interaction  306  1.0000  1.0000   1.0000     1.0000  -            -           1.0000  0.0000  0    0    0   306  nan    1.0000  1:1.000      1:1.000
-string           interaction  314  0.9841  0.9841   1.0000     0.9841  -            -           0.9920  0.0000  0    0    5   309  nan    1.0000  1:1.000      0:0.016 1:0.984
-
-Source-Specific Regression Tasks
-source        task      n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
-------------  --------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
-ppb_affinity  affinity  748  7.2421      2.0063     7.5994     0.9452    1.6776  2.0496  0.2230   0.1905    -0.0435
-skempi        affinity  294  6.4336      1.7855     7.7090     1.2035    1.6645  1.9475  0.5748   0.5695    -0.1898
-
-Source-Normalized Regression Tasks
-task      n     label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
---------  ----  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
-affinity  1042  -0.0000     1.0000     0.3294     0.5880    0.8633  1.0415  0.3142   0.3257    -0.0848
-
-Checkpoint Regression Calibration Applied
-task      cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
---------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  ------
-affinity  1042   0.6030  2.4132     7.0144     0.6186    1.4967  1.8813  0.3121   0.2761    0.0974
-```
+Results are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-07-19_seed_1.pt) under `evaluation["splits"]["validation"]`. Historical tables are preserved in `historical_reports`.
 
 #### Test Split
-Aggregate and calibrated interaction metrics are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-07-19_seed_1.pt) under `evaluation["splits"]["test"]`.
-
-```
-Regression Tasks
-task      n     label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
---------  ----  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
-affinity  1042  7.4975      2.1386     7.5062     0.9251    1.7998  2.3108  0.0227   0.0249    -0.1675
-
-Source-Specific Classification Tasks
-source           task         n    acc     bal_acc  precision  recall  specificity  neg_recall  f1      mcc     tn   fp  fn   tp   auroc  auprc   label_ratio  pred_ratio
----------------  -----------  ---  ------  -------  ---------  ------  -----------  ----------  ------  ------  ---  --  ---  ---  -----  ------  -----------  ---------------
-intact_positive  interaction  22   0.3182  0.3182   1.0000     0.3182  -            -           0.4828  0.0000  0    0   15   7    nan    1.0000  1:1.000      0:0.682 1:0.318
-negatome         interaction  216  0.8565  0.8565   0.0000     0.0000  0.8565       0.8565      0.0000  0.0000  185  31  0    0    nan    0.0000  0:1.000      0:0.856 1:0.144
-ppb_affinity     interaction  761  0.8515  0.8515   1.0000     0.8515  -            -           0.9198  0.0000  0    0   113  648  nan    1.0000  1:1.000      0:0.148 1:0.852
-skempi           interaction  300  0.9800  0.9800   1.0000     0.9800  -            -           0.9899  0.0000  0    0   6    294  nan    1.0000  1:1.000      0:0.020 1:0.980
-string           interaction  314  0.9809  0.9809   1.0000     0.9809  -            -           0.9904  0.0000  0    0   6    308  nan    1.0000  1:1.000      0:0.019 1:0.981
-
-Source-Specific Regression Tasks
-source        task      n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
-------------  --------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
-ppb_affinity  affinity  761  7.3170      2.0450     7.5700     0.9798    1.7709  2.2593  0.0254   0.0335    -0.2205
-skempi        affinity  281  7.9862      2.3037     7.3337     0.7298    1.8780  2.4450  0.0856   0.1584    -0.1264
-
-Source-Normalized Regression Tasks
-task      n     label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
---------  ----  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
-affinity  1042  -0.0000     1.0000     0.0139     0.4768    0.8523  1.0932  0.0340   0.0575    -0.1951
-
-Checkpoint Regression Calibration Applied
-task      cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
---------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  -------
-affinity  1042   0.6030  2.4132     6.9395     0.5578    1.7299  2.2676  0.0227   0.0249    -0.1243
-```
+Results are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-07-19_seed_1.pt) under `evaluation["splits"]["test"]`. Historical tables are preserved in `historical_reports`.
 
 ### Version 2026-08-12
 #### Changes
@@ -592,70 +423,13 @@ python train.py
 ```
 
 #### Results
-- Interaction validation improved relative to the previous run.
-- Calibrated interaction validation was similar but shifted toward higher recall.
-- Source-specific affinity heads helped SKEMPI more than PPB-Affinity. SKEMPI validation reached `Pearson=0.5427`, `Spearman=0.5777`, and calibrated `R2=0.2945`; PPB-Affinity remained weak with `Pearson=0.1317`, `Spearman=0.0918`, and calibrated `R2=0.0174`.
-- Test interaction performance remains strong.
-- Affinity did not generalize. PPB-Affinity stayed weak on test (`Pearson=0.0954`, `Spearman=0.1038`, calibrated `R2=0.0047`) and SKEMPI collapsed despite good validation performance (`Pearson=-0.0434`, `Spearman=-0.0755`, calibrated `R2=-0.4946`).
-- Main readout: keep the interaction setup, but do not treat the source-specific affinity-head experiment as successful. The affinity problem likely needs data/split investigation or a source-specific architecture/training regime beyond just separate heads.
+- Interaction performance remained strong. Separate affinity heads helped SKEMPI on validation but failed to generalize on test; PPB-Affinity remained weak.
 
 #### Validation Split
-Classification metrics are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-08-12_seed_1.pt) under `evaluation["splits"]["validation"]`.
-
-```
-Regression Tasks
-task                   n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
----------------------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
-affinity_ppb_affinity  748  7.2421      2.0063     7.3945     0.9290    1.6700  2.1025  0.1317   0.0918    -0.0982
-affinity_skempi        294  6.4336      1.7855     6.8218     1.3400    1.3053  1.5929  0.5427   0.5777    0.2041
-
-Source-Specific Regression Tasks
-source        task                   n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
-------------  ---------------------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
-ppb_affinity  affinity_ppb_affinity  748  7.2421      2.0063     7.3945     0.9290    1.6700  2.1025  0.1317   0.0918    -0.0982
-skempi        affinity_skempi        294  6.4336      1.7855     6.8218     1.3400    1.3053  1.5929  0.5427   0.5777    0.2041
-
-Source-Normalized Regression Tasks
-task                   n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
----------------------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
-affinity_ppb_affinity  748  -0.0000     1.0000     0.0760     0.4630    0.8323  1.0479  0.1317   0.0918    -0.0982
-affinity_skempi        294  0.0000      1.0000     0.2174     0.7505    0.7311  0.8921  0.5427   0.5777    0.2041
-
-Checkpoint Regression Calibration Applied
-task                   cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
----------------------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  ------
-affinity_ppb_affinity  748    0.2840  5.1420     7.2422     0.2638    1.5614  1.9889  0.1317   0.0918    0.0174
-affinity_skempi        294    0.7234  1.4996     6.4344     0.9693    1.1558  1.4996  0.5427   0.5777    0.2945
-```
+Results are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-08-12_seed_1.pt) under `evaluation["splits"]["validation"]`. Historical tables are preserved in `historical_reports`.
 
 #### Test Split
-Classification metrics are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-08-12_seed_1.pt) under `evaluation["splits"]["test"]`.
-
-```
-Regression Tasks
-task                   n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
----------------------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
-affinity_ppb_affinity  761  7.3170      2.0450     7.3219     1.0303    1.7415  2.2004  0.0954   0.1038    -0.1577
-affinity_skempi        281  7.9862      2.3037     6.9642     0.8739    2.0548  2.7000  -0.0434  -0.0755   -0.3736
-
-Source-Specific Regression Tasks
-source        task                   n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
-------------  ---------------------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
-ppb_affinity  affinity_ppb_affinity  761  7.3170      2.0450     7.3219     1.0303    1.7415  2.2004  0.0954   0.1038    -0.1577
-skempi        affinity_skempi        281  7.9862      2.3037     6.9642     0.8739    2.0548  2.7000  -0.0434  -0.0755   -0.3736
-
-Source-Normalized Regression Tasks
-task                   n    label_mean  label_std  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
----------------------  ---  ----------  ---------  ---------  --------  ------  ------  -------  --------  -------
-affinity_ppb_affinity  761  -0.0000     1.0000     0.0024     0.5038    0.8515  1.0760  0.0954   0.1038    -0.1577
-affinity_skempi        281  0.0000      1.0000     -0.4436    0.3793    0.8919  1.1720  -0.0434  -0.0755   -0.3736
-
-Checkpoint Regression Calibration Applied
-task                   cal_n  slope   intercept  pred_mean  pred_std  mae     rmse    pearson  spearman  r2
----------------------  -----  ------  ---------  ---------  --------  ------  ------  -------  --------  -------
-affinity_ppb_affinity  748    0.2840  5.1420     7.2215     0.2926    1.5921  2.0403  0.0954   0.1038    0.0047
-affinity_skempi        294    0.7234  1.4996     6.5374     0.6322    2.1280  2.8164  -0.0434  -0.0755   -0.4946
-```
+Results are stored in [the checkpoint](checkpoints/prostt5_group_pair_adapter_best_2026-08-12_seed_1.pt) under `evaluation["splits"]["test"]`. Historical tables are preserved in `historical_reports`.
 
 ### Version 2026-08-13
 #### Changes
