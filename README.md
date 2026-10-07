@@ -440,10 +440,6 @@ Results are stored in [metrics.json](runs/2026-07-19_seed_1/metrics.json) under 
 - PPB-Affinity and SKEMPI appear to behave differently enough that one shared affinity head is likely underfitting source-specific label structure.
 - This change isolates PPB and SKEMPI affinity prediction at the head level while preserving the same frozen ProstT5 encoder, adapter, group pooling, and pair representation.
 
-#### Next Run
-- Re-tokenization is required because the tokenized cache task layout changes from one `affinity` task to separate source-specific affinity tasks.
-- Frozen ProstT5 backbone embeddings can optionally be cached after tokenization to avoid re-running the transformer during training and validation.
-
 ```bash
 python tokenize_data.py
 python cache_embeddings.py
