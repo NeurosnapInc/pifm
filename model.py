@@ -13,7 +13,6 @@ from config import (
   ADAPTER_DIM,
   CLASSIFICATION_HEAD_HIDDEN,
   DROPOUT,
-  GROUP_POOL_HIDDEN,
   PAIR_MLP_HIDDEN,
 )
 
@@ -149,22 +148,18 @@ class Adapter(nn.Module):
     return self.scale * self.dropout(self.up_project(self.activation(self.down_project(x_norm))))
 
 
-class AttentionPool(nn.Module):
-  def __init__(self, d_model, hidden, dropout=DROPOUT):
-    super().__init__()
-    self.proj = nn.Sequential(
-      nn.Linear(d_model, hidden),
-      nn.GELU(),
-      nn.Dropout(dropout),
-    )
-    self.context = nn.Linear(hidden, 1, bias=False)
+class MeanPool(nn.Module):
+  """Average valid chain embeddings with equal weight for each chain.
+
+  Accumulate in float32 for mixed-precision stability. Group pooling receives
+  one vector per chain, so longer chains do not receive additional weight.
+  """
 
   def forward(self, x, mask):
-    h = self.proj(x)
-    scores = self.context(h).squeeze(-1)
-    scores = scores.masked_fill(mask == 0, -1e9)
-    attn = torch.softmax(scores, dim=1)
-    return torch.bmm(attn.unsqueeze(1), x).squeeze(1)
+    valid = mask.bool().unsqueeze(-1)
+    total = x.float().masked_fill(~valid, 0.0).sum(dim=1)
+    count = valid.sum(dim=1).clamp_min(1)
+    return (total / count).to(dtype=x.dtype)
 
 
 class MaxPool(nn.Module):
@@ -216,7 +211,7 @@ class MultiTaskGroupPairModel(nn.Module):
 
     self.adapter = Adapter(embed_dim, adapter_dim, dropout_prob=dropout)
     self.residue_pool = MaxPool()
-    self.group_pool = AttentionPool(embed_dim, hidden=GROUP_POOL_HIDDEN, dropout=dropout)
+    self.group_pool = MeanPool()
     self.pair_mlp = nn.Sequential(
       nn.LayerNorm(embed_dim * 3),
       nn.Linear(embed_dim * 3, PAIR_MLP_HIDDEN),
