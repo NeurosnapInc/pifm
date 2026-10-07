@@ -309,7 +309,7 @@ This enables:
 
 ### Residue → Chain Pooling
 - [x] Mean pooling
-- [ ] Max pooling
+- [x] Max pooling
 - [x] Attention pooling
 - [ ] Learned weighted pooling
 
