@@ -313,7 +313,11 @@ This enables:
 - [x] Attention pooling
 - [x] Learned weighted pooling
 
-The current residue-to-chain ablation uses a linear token scorer followed by masked softmax and a weighted sum. It starts with uniform weights and learns which tokens to emphasize. This is a simpler attention-style pool than the earlier MLP attention pooling; chain-to-group MLP attention remains unchanged. The choice is embedded directly in `model.py`, and existing tokenized data and backbone embeddings can be reused.
+#### Ablation Results:
+- **Winner: max pooling** (`2026-10-07_05-36_seed_1`): best validation AUROC (0.9414) and test AUROC/AUPRC (0.9297/0.9843), with calibrated test balanced accuracy 0.8604, specificity 0.8194, and MCC 0.6192.
+- Mean achieved higher calibrated test F1 (0.9472), but much weaker negative recall (0.4583); attention and learned weighting also trailed max on balanced detection.
+- Learned weighting did not improve test ranking over attention (AUROC 0.8355 versus 0.8353) and had the lowest calibrated test balanced accuracy (0.6700).
+- Select max as the next baseline; single-seed evidence and weak default-threshold IntAct recall remain caveats. Full comparison: [ablation notes](runs/2026-10-07_19-01_seed_1/notes.md).
 
 ### Group Pooling
 Evaluate permutation-invariant approaches:
