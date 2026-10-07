@@ -167,27 +167,18 @@ class AttentionPool(nn.Module):
     return torch.bmm(attn.unsqueeze(1), x).squeeze(1)
 
 
-class LearnedWeightedPool(nn.Module):
-  """Learn a scalar score per token and pool its softmax-weighted embedding.
+class MaxPool(nn.Module):
+  """Take each feature's maximum over valid token embeddings for a chain.
 
   The tokenizer's existing attention mask defines valid positions, including
-  A single linear scorer distinguishes this ablation from the MLP attention
-  pool used for groups. Zero initialization starts with uniform weights over
-  valid tokens. Padding is excluded, and entirely masked chains return zeros.
+  special tokens. Mask padding with negative infinity so it cannot dominate
+  negative features; an entirely masked chain returns zeros.
   """
 
-  def __init__(self, d_model):
-    super().__init__()
-    self.score = nn.Linear(d_model, 1, bias=False)
-    nn.init.zeros_(self.score.weight)
-
   def forward(self, x, mask):
-    valid = mask.bool()
-    values = x.masked_fill(~valid.unsqueeze(-1), 0.0)
-    scores = self.score(values).squeeze(-1).float()
-    scores = scores.masked_fill(~valid, torch.finfo(scores.dtype).min)
-    weights = torch.softmax(scores, dim=1).masked_fill(~valid, 0.0)
-    return (weights.unsqueeze(-1) * values.float()).sum(dim=1).to(dtype=x.dtype)
+    valid = mask.bool().unsqueeze(-1)
+    pooled = x.masked_fill(~valid, float("-inf")).max(dim=1).values
+    return torch.where(valid.any(dim=1), pooled, torch.zeros_like(pooled))
 
 
 class PairTaskHead(nn.Module):
@@ -224,7 +215,7 @@ class MultiTaskGroupPairModel(nn.Module):
         param.requires_grad = False
 
     self.adapter = Adapter(embed_dim, adapter_dim, dropout_prob=dropout)
-    self.residue_pool = LearnedWeightedPool(embed_dim)
+    self.residue_pool = MaxPool()
     self.group_pool = AttentionPool(embed_dim, hidden=GROUP_POOL_HIDDEN, dropout=dropout)
     self.pair_mlp = nn.Sequential(
       nn.LayerNorm(embed_dim * 3),
