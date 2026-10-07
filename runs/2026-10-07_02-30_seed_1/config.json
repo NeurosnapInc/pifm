@@ -1,0 +1,98 @@
+{
+  "git_commit": "bda5eef44e534ed37b517cfaab0ac5a11096ee66",
+  "settings": {
+    "MODEL_NAME": "Rostlab/ProstT5",
+    "GLOBAL_SEED": 1,
+    "RUNS_DIR": "runs",
+    "AGGREGATED_DB_PATH": "data/aggregated/aggregated.duckdb",
+    "INTACT_ARCHIVE_PATH": "data/raw/intact_all_2026_07_03.zip",
+    "INTACT_SPECIES_TAXID": "9606",
+    "INTACT_INTERACTOR_TYPES": [
+      "protein",
+      "peptide"
+    ],
+    "INTACT_INTERACTION_TYPES": [
+      "physical association",
+      "direct interaction"
+    ],
+    "SPLIT_SEED": 1,
+    "TRAIN_FRACTION": 0.8,
+    "VAL_FRACTION": 0.1,
+    "TEST_FRACTION": 0.1,
+    "SPLIT_STRATEGY": "cluster",
+    "CLUSTER_MIN_SEQ_ID": 0.5,
+    "CLUSTER_COVERAGE": 0.8,
+    "MMSEQS_BINARY": "mmseqs",
+    "SEQUENCE_CLUSTER_FASTA_PATH": "data/tokenized/split_sequences.fasta",
+    "SEQUENCE_CLUSTER_TSV_PATH": "data/tokenized/split_sequence_clusters.tsv",
+    "SEQUENCE_CLUSTER_WORK_DIR": "data/tokenized/mmseqs_tmp",
+    "MAX_LENGTH": 2048,
+    "TOKENIZED_DATA_DIR": "data/tokenized",
+    "TRAIN_CACHE_PATH": "data/tokenized/interaction_group_pair_prostt5_tokens.pt",
+    "BACKBONE_EMBEDDING_CACHE_PATH": "data/tokenized/interaction_prostt5_backbone_embeddings.pt",
+    "USE_BACKBONE_EMBEDDING_CACHE": true,
+    "EMBEDDING_CACHE_MAX_TOKENS_PER_BATCH": 32768,
+    "BATCH_SIZE": 8,
+    "LR": 0.0001,
+    "EPOCHS": 10,
+    "WEIGHT_DECAY": 0.01,
+    "WARMUP_RATIO": 0.05,
+    "PATIENCE": 3,
+    "TRAINING_SEED": 1,
+    "BATCH_SAMPLER_SEED": 1,
+    "MIN_CLASSIFICATION_VAL_LABELS": 100,
+    "CLASSIFICATION_SELECTION_METRIC": "auroc",
+    "INTERACTION_LOSS": "focal",
+    "FOCAL_GAMMA": 2.0,
+    "INTERACTION_POS_NEG_RATIO": 5.0,
+    "SOURCE_BALANCED_SAMPLING": true,
+    "ADAPTER_DIM": 64,
+    "DROPOUT": 0.1,
+    "GROUP_POOL_HIDDEN": 256,
+    "PAIR_MLP_HIDDEN": 512,
+    "CLASSIFICATION_HEAD_HIDDEN": 256,
+    "TRAIN_MAX_TOKENS_PER_BATCH": 49152,
+    "EVAL_MAX_TOKENS_PER_BATCH": 65536
+  },
+  "embed_dim": 1024,
+  "adapter_dim": 64,
+  "dropout": 0.1,
+  "classification_head_hidden": 256,
+  "model_name": "Rostlab/ProstT5",
+  "tokenized_data_path": "data/tokenized/interaction_group_pair_prostt5_tokens.pt",
+  "task_names": [
+    "interaction"
+  ],
+  "task_metas": {
+    "interaction": {
+      "task_name": "interaction",
+      "dtype": "bool",
+      "head_type": "pair_binary",
+      "num_classes": 2,
+      "loss": "ce"
+    }
+  },
+  "task_output_dims": {
+    "interaction": 2
+  },
+  "interaction_loss": "focal",
+  "focal_gamma": 2.0,
+  "interaction_pos_neg_ratio": 5.0,
+  "source_balanced_sampling": true,
+  "used_backbone_embedding_cache": true,
+  "backbone_embedding_cache_path": "data/tokenized/interaction_prostt5_backbone_embeddings.pt",
+  "calibration": {
+    "source_split": "validation",
+    "classification": {
+      "interaction": {
+        "threshold": 0.93,
+        "calibration_size": 1614
+      }
+    }
+  },
+  "training_seed": 1,
+  "run_date": "2026-10-07",
+  "run_timestamp": "2026-10-07T02:30:36+00:00",
+  "classification_selection_metric": "auroc",
+  "min_classification_val_labels": 100
+}

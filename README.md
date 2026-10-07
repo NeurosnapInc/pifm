@@ -308,7 +308,7 @@ This enables:
 - [ ] Frozen backbone + LoRA
 
 ### Residue → Chain Pooling
-- [ ] Mean pooling
+- [x] Mean pooling
 - [ ] Max pooling
 - [x] Attention pooling
 - [ ] Learned weighted pooling
