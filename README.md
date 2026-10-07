@@ -311,7 +311,9 @@ This enables:
 - [x] Mean pooling
 - [x] Max pooling
 - [x] Attention pooling
-- [ ] Learned weighted pooling
+- [x] Learned weighted pooling
+
+The current residue-to-chain ablation uses a linear token scorer followed by masked softmax and a weighted sum. It starts with uniform weights and learns which tokens to emphasize. This is a simpler attention-style pool than the earlier MLP attention pooling; chain-to-group MLP attention remains unchanged. The choice is embedded directly in `model.py`, and existing tokenized data and backbone embeddings can be reused.
 
 ### Group Pooling
 Evaluate permutation-invariant approaches:
