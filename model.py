@@ -148,26 +148,12 @@ class Adapter(nn.Module):
     return self.scale * self.dropout(self.up_project(self.activation(self.down_project(x_norm))))
 
 
-class MeanPool(nn.Module):
-  """Average valid chain embeddings with equal weight for each chain.
-
-  Accumulate in float32 for mixed-precision stability. Group pooling receives
-  one vector per chain, so longer chains do not receive additional weight.
-  """
-
-  def forward(self, x, mask):
-    valid = mask.bool().unsqueeze(-1)
-    total = x.float().masked_fill(~valid, 0.0).sum(dim=1)
-    count = valid.sum(dim=1).clamp_min(1)
-    return (total / count).to(dtype=x.dtype)
-
-
 class MaxPool(nn.Module):
-  """Take each feature's maximum over valid token embeddings for a chain.
+  """Take each feature's maximum over valid token or chain embeddings.
 
-  The tokenizer's existing attention mask defines valid positions, including
-  special tokens. Mask padding with negative infinity so it cannot dominate
-  negative features; an entirely masked chain returns zeros.
+  Residue pooling uses the tokenizer's attention mask, including special tokens;
+  group pooling uses one valid position per chain. Mask padding with negative
+  infinity so it cannot dominate negative features. Fully masked inputs return zeros.
   """
 
   def forward(self, x, mask):
@@ -211,7 +197,7 @@ class MultiTaskGroupPairModel(nn.Module):
 
     self.adapter = Adapter(embed_dim, adapter_dim, dropout_prob=dropout)
     self.residue_pool = MaxPool()
-    self.group_pool = MeanPool()
+    self.group_pool = MaxPool()
     self.pair_mlp = nn.Sequential(
       nn.LayerNorm(embed_dim * 3),
       nn.Linear(embed_dim * 3, PAIR_MLP_HIDDEN),

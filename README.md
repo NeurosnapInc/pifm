@@ -322,7 +322,7 @@ This enables:
 ### Group Pooling
 Evaluate permutation-invariant approaches:
 - [x] Mean pooling
-- [ ] Max pooling
+- [x] Max pooling
 - [x] Attention pooling
 - [ ] DeepSets
 - [ ] Set Transformer
