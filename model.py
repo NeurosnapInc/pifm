@@ -149,16 +149,46 @@ class Adapter(nn.Module):
 
 
 class MaxPool(nn.Module):
-  """Take each feature's maximum over valid token or chain embeddings.
+  """Take each feature's maximum over valid token embeddings.
 
   Residue pooling uses the tokenizer's attention mask, including special tokens;
-  group pooling uses one valid position per chain. Mask padding with negative
-  infinity so it cannot dominate negative features. Fully masked inputs return zeros.
+  mask padding with negative infinity so it cannot dominate negative features.
+  Fully masked inputs return zeros.
   """
 
   def forward(self, x, mask):
     valid = mask.bool().unsqueeze(-1)
     pooled = x.masked_fill(~valid, float("-inf")).max(dim=1).values
+    return torch.where(valid.any(dim=1), pooled, torch.zeros_like(pooled))
+
+
+class DeepSetsPool(nn.Module):
+  """Encode a chain set as rho(sum(phi(chain))) without depending on its order.
+
+  Shared per-chain and output MLPs preserve the embedding width, using the
+  adapter-sized bottleneck to limit added parameters. Sum aggregation retains
+  chain multiplicity rather than averaging it away. Padding contributes nothing,
+  and fully masked groups return zeros instead of the output MLP's biases.
+  """
+
+  def __init__(self, input_dim):
+    super().__init__()
+    self.phi = nn.Sequential(
+      nn.LayerNorm(input_dim),
+      nn.Linear(input_dim, ADAPTER_DIM),
+      nn.GELU(),
+      nn.Linear(ADAPTER_DIM, input_dim),
+    )
+    self.rho = nn.Sequential(
+      nn.Linear(input_dim, ADAPTER_DIM),
+      nn.GELU(),
+      nn.Linear(ADAPTER_DIM, input_dim),
+    )
+
+  def forward(self, x, mask):
+    valid = mask.bool().unsqueeze(-1)
+    transformed = self.phi(x.masked_fill(~valid, 0))
+    pooled = self.rho(transformed.masked_fill(~valid, 0).sum(dim=1))
     return torch.where(valid.any(dim=1), pooled, torch.zeros_like(pooled))
 
 
@@ -197,7 +227,7 @@ class MultiTaskGroupPairModel(nn.Module):
 
     self.adapter = Adapter(embed_dim, adapter_dim, dropout_prob=dropout)
     self.residue_pool = MaxPool()
-    self.group_pool = MaxPool()
+    self.group_pool = DeepSetsPool(embed_dim)
     self.pair_mlp = nn.Sequential(
       nn.LayerNorm(embed_dim * 3),
       nn.Linear(embed_dim * 3, PAIR_MLP_HIDDEN),
@@ -224,9 +254,7 @@ class MultiTaskGroupPairModel(nn.Module):
     for sample_idx in range(batch_size):
       mask = (chain_to_sample == sample_idx) & (chain_to_group == group_id)
       sample_chains = chain_embeddings[mask]
-      if sample_chains.shape[0] == 1:
-        group_embeddings.append(sample_chains[0])
-        continue
+      # DeepSets must transform singleton groups too, not bypass its learned MLPs.
       pooled = self.group_pool(
         sample_chains.unsqueeze(0),
         torch.ones((1, sample_chains.shape[0]), dtype=torch.long, device=sample_chains.device),
