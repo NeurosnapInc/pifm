@@ -325,7 +325,7 @@ Evaluate permutation-invariant approaches:
 - [x] Max pooling
 - [x] Attention pooling
 - [x] DeepSets
-- [ ] Set Transformer
+- [x] Set Transformer
 
 ### Interaction Module
 Test:

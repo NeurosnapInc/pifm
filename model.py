@@ -162,34 +162,71 @@ class MaxPool(nn.Module):
     return torch.where(valid.any(dim=1), pooled, torch.zeros_like(pooled))
 
 
-class DeepSetsPool(nn.Module):
-  """Encode a chain set as rho(sum(phi(chain))) without depending on its order.
+class SetAttentionBlock(nn.Module):
+  """Apply multihead attention, residual normalization, and a row-wise MLP.
 
-  Shared per-chain and output MLPs preserve the embedding width, using the
-  adapter-sized bottleneck to limit added parameters. Sum aggregation retains
-  chain multiplicity rather than averaging it away. Padding contributes nothing,
-  and fully masked groups return zeros instead of the output MLP's biases.
+  A set querying itself gives equivariant self-attention; a learned seed
+  querying the set instead gives invariant pooling.
   """
 
-  def __init__(self, input_dim):
+  def __init__(self, hidden_dim, dropout):
     super().__init__()
-    self.phi = nn.Sequential(
+    self.attention = nn.MultiheadAttention(hidden_dim, 4, dropout=dropout, batch_first=True)
+    self.attention_norm = nn.LayerNorm(hidden_dim)
+    self.feedforward = nn.Sequential(
+      nn.Linear(hidden_dim, hidden_dim * 2),
+      nn.GELU(),
+      nn.Dropout(dropout),
+      nn.Linear(hidden_dim * 2, hidden_dim),
+    )
+    self.output_norm = nn.LayerNorm(hidden_dim)
+
+  def forward(self, query, context, padding_mask):
+    attended, _ = self.attention(
+      query, context, context, key_padding_mask=padding_mask, need_weights=False,
+    )
+    hidden = self.attention_norm(query + attended)
+    return self.output_norm(hidden + self.feedforward(hidden))
+
+
+class SetTransformerPool(nn.Module):
+  """Encode chains with two self-attention blocks and one learned pooling seed.
+
+  Four-head attention uses a fixed 256-dimensional internal width before
+  projection back to the input width. No positional encodings are used, so
+  chain ordering does not affect evaluation outputs. Singleton groups use
+  the same encoder as multimers. Padding is excluded from attention; fully
+  masked and empty groups return zeros.
+  """
+
+  def __init__(self, input_dim, dropout=DROPOUT):
+    super().__init__()
+    hidden_dim = 256
+    self.input_project = nn.Sequential(
       nn.LayerNorm(input_dim),
-      nn.Linear(input_dim, ADAPTER_DIM),
-      nn.GELU(),
-      nn.Linear(ADAPTER_DIM, input_dim),
+      nn.Linear(input_dim, hidden_dim),
     )
-    self.rho = nn.Sequential(
-      nn.Linear(input_dim, ADAPTER_DIM),
-      nn.GELU(),
-      nn.Linear(ADAPTER_DIM, input_dim),
-    )
+    self.encoder = nn.ModuleList([SetAttentionBlock(hidden_dim, dropout) for _ in range(2)])
+    self.seed = nn.Parameter(torch.empty(1, 1, hidden_dim))
+    nn.init.normal_(self.seed, std=0.02)
+    self.pool = SetAttentionBlock(hidden_dim, dropout)
+    self.output_project = nn.Linear(hidden_dim, input_dim)
 
   def forward(self, x, mask):
-    valid = mask.bool().unsqueeze(-1)
-    transformed = self.phi(x.masked_fill(~valid, 0))
-    pooled = self.rho(transformed.masked_fill(~valid, 0).sum(dim=1))
-    return torch.where(valid.any(dim=1), pooled, torch.zeros_like(pooled))
+    if x.shape[1] == 0:
+      return x.sum(dim=1)
+    valid = mask.bool()
+    has_chains = valid.any(dim=1, keepdim=True)
+    # A harmless dummy key prevents all-masked attention from producing NaNs.
+    safe_valid = valid.clone()
+    safe_valid[:, 0] |= ~has_chains.squeeze(1)
+    hidden = self.input_project(x.masked_fill(~valid.unsqueeze(-1), 0))
+    for block in self.encoder:
+      hidden = block(hidden, hidden, ~safe_valid)
+      hidden = hidden.masked_fill(~valid.unsqueeze(-1), 0)
+    pooled = self.pool(self.seed.expand(x.shape[0], -1, -1), hidden, ~safe_valid)
+    output = self.output_project(pooled.squeeze(1))
+    return torch.where(has_chains, output, torch.zeros_like(output))
 
 
 class PairTaskHead(nn.Module):
@@ -227,7 +264,7 @@ class MultiTaskGroupPairModel(nn.Module):
 
     self.adapter = Adapter(embed_dim, adapter_dim, dropout_prob=dropout)
     self.residue_pool = MaxPool()
-    self.group_pool = DeepSetsPool(embed_dim)
+    self.group_pool = SetTransformerPool(embed_dim, dropout=dropout)
     self.pair_mlp = nn.Sequential(
       nn.LayerNorm(embed_dim * 3),
       nn.Linear(embed_dim * 3, PAIR_MLP_HIDDEN),
@@ -254,7 +291,7 @@ class MultiTaskGroupPairModel(nn.Module):
     for sample_idx in range(batch_size):
       mask = (chain_to_sample == sample_idx) & (chain_to_group == group_id)
       sample_chains = chain_embeddings[mask]
-      # DeepSets must transform singleton groups too, not bypass its learned MLPs.
+      # Singleton groups also pass through the learned set encoder.
       pooled = self.group_pool(
         sample_chains.unsqueeze(0),
         torch.ones((1, sample_chains.shape[0]), dtype=torch.long, device=sample_chains.device),
