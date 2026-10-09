@@ -350,7 +350,7 @@ Test:
 
 ### Loss Functions
 - [x] BCE
-- [ ] BCE + contrastive term
+- [x] BCE + contrastive term
 - [x] Class-Weighted Focal Loss
 - [ ] Focal + contrastive term
 

@@ -48,7 +48,7 @@ MIN_CLASSIFICATION_VAL_LABELS = 100
 CLASSIFICATION_SELECTION_METRIC = "auroc"  # "auroc" or "balanced_accuracy"
 
 ### Interaction Classification
-INTERACTION_LOSS = "bce"  # Run metadata; the loss implementation lives in train.py.
+INTERACTION_LOSS = "bce_contrastive"  # Run metadata; implementation lives in train.py.
 INTERACTION_POS_NEG_RATIO = 5.0
 SOURCE_BALANCED_SAMPLING = True
 

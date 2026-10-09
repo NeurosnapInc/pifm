@@ -75,6 +75,27 @@ class BinaryCrossEntropyLoss(nn.Module):
   def __init__(self, weight):
     super().__init__()
     self.register_buffer("weight", weight)
+    self.contrastive_weight = 0.1
+    self.contrastive_margin = 1.0
+
+  def contrastive(self, group1, group2, targets):
+    """Pull positive pairs together and separate labeled negative pairs.
+
+    Normalize in float32 and use cosine distance in [0, 2]. Positive loss
+    is squared distance; negative loss is squared hinge distance to margin
+    1 (cosine similarity <= 0). Class weighting and reduction match BCE.
+    Only provided pair labels are used, never assumed in-batch negatives.
+    """
+    left = F.normalize(group1.float(), dim=-1)
+    right = F.normalize(group2.float(), dim=-1)
+    distance = (1.0 - (left * right).sum(dim=-1)).clamp(0.0, 2.0)
+    losses = torch.where(
+      targets.bool(),
+      distance.square(),
+      F.relu(self.contrastive_margin - distance).square(),
+    )
+    sample_weights = self.weight[targets]
+    return (losses * sample_weights).sum() / sample_weights.sum()
 
   def forward(self, logits, targets):
     # Subtract in float32 to avoid overflow/precision loss under autocast.
@@ -384,6 +405,8 @@ best_state = None
 for epoch in range(EPOCHS):
   model.train()
   total_loss = 0.0
+  total_bce_loss = 0.0
+  total_contrastive_loss = 0.0
 
   for batch in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{EPOCHS}"):
     with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=AMP_ENABLED):
@@ -391,7 +414,11 @@ for epoch in range(EPOCHS):
       mask = label_mask[:, task_idx]
       logits = outputs[TASK_NAME][mask]
       targets = raw_labels[mask, task_idx].long()
-      loss = criterion(logits, targets)
+      bce_loss = criterion(logits, targets)
+      contrastive_loss = criterion.contrastive(
+        outputs["group1_embeddings"][mask], outputs["group2_embeddings"][mask], targets,
+      )
+      loss = bce_loss + criterion.contrastive_weight * contrastive_loss
 
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
@@ -399,6 +426,8 @@ for epoch in range(EPOCHS):
     optimizer.step()
     scheduler.step()
     total_loss += loss.item()
+    total_bce_loss += bce_loss.item()
+    total_contrastive_loss += contrastive_loss.item()
 
   model.eval()
   val_predictions = {TASK_NAME: _collect_predictions(model, val_loader, task_idx)}
@@ -414,7 +443,9 @@ for epoch in range(EPOCHS):
   auroc_msg = "nan" if report["auroc"] is None else f"{report['auroc']:.4f}"
   specificity_msg = "nan" if report["specificity"] is None else f"{report['specificity']:.4f}"
   print(
-    f"Train Loss: {total_loss / len(train_loader):.4f} | Val "
+    f"Train Loss: {total_loss / len(train_loader):.4f} "
+    f"(BCE={total_bce_loss / len(train_loader):.4f} "
+    f"contrastive={total_contrastive_loss / len(train_loader):.4f}, weight={criterion.contrastive_weight}) | Val "
     f"interaction:ACC={report['acc']:.4f} BAL_ACC={report['balanced_accuracy']:.4f} "
     f"SPEC={specificity_msg} MCC={report['mcc']:.4f} F1={report['f1']:.4f} AUROC={auroc_msg} "
     f"| Select {selection_metric_name}={selection_metric:.4f}"
@@ -476,6 +507,10 @@ save_run(
       "task_metas": task_metas,
       "task_output_dims": task_output_dims,
       "interaction_loss": INTERACTION_LOSS,
+      "contrastive_weight": criterion.contrastive_weight,
+      "contrastive_margin": criterion.contrastive_margin,
+      "contrastive_distance": "cosine",
+      "contrastive_class_weighted": True,
       "interaction_pos_neg_ratio": INTERACTION_POS_NEG_RATIO,
       "source_balanced_sampling": SOURCE_BALANCED_SAMPLING,
       "used_backbone_embedding_cache": embedding_cache is not None,
@@ -491,7 +526,13 @@ save_run(
     },
   },
   run_dir,
-  notes=f"# Run {run_dir.name}\n\nInteraction-only training with a frozen ProstT5 backbone and adapters.\n",
+  notes=(
+    f"# Run {run_dir.name}\n\nInteraction-only training with a frozen ProstT5 backbone and adapters.\n\n"
+    "BCE + pairwise contrastive ablation with residue max and group mean pooling.\n"
+    "Both terms use class weights and weight-sum normalization. Contrastive loss uses\n"
+    "normalized group embeddings, squared cosine distance for positives, and a squared\n"
+    f"hinge for negatives (margin {criterion.contrastive_margin}, weight {criterion.contrastive_weight}).\n"
+  ),
 )
 print(f"Saved run -> {run_dir}")
 

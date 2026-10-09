@@ -264,10 +264,14 @@ class MultiTaskGroupPairModel(nn.Module):
     group1_embeddings = self._pool_group(chain_embeddings, chain_to_sample, chain_to_group, batch_size, group_id=0)
     group2_embeddings = self._pool_group(chain_embeddings, chain_to_sample, chain_to_group, batch_size, group_id=1)
     pair_hidden = self.pair_mlp(self._pair_features(group1_embeddings, group2_embeddings))
-    return {
+    outputs = {
       task_name: head(pair_hidden)
       for task_name, head in self.heads.items()
     }
+    # The auxiliary loss needs undetached group vectors to train the adapter.
+    outputs["group1_embeddings"] = group1_embeddings
+    outputs["group2_embeddings"] = group2_embeddings
+    return outputs
 
 
 def unwrap_model(model):
