@@ -63,18 +63,19 @@ USE_FUSED_ADAMW = DEVICE.type == "cuda"
 TASK_NAME = "interaction"
 
 
-class BinaryCrossEntropyLoss(nn.Module):
-  """Stable weighted BCE for the existing two-logit interaction head.
+class FocalCrossEntropyLoss(nn.Module):
+  """Historical class-weighted focal objective for the interaction head.
 
-  The positive-minus-negative logit has sigmoid probability equal to the
-  two-class softmax positive probability. Weight both classes and normalize
-  by their observed weight sum, matching weighted cross-entropy without focal
-  modulation while leaving model outputs and evaluation unchanged.
+  Preserve the baseline's gamma, weighted-CE modulation, and batch-mean
+  reduction for comparability. Its exp(-weighted_ce) is not the unweighted
+  true-class probability used in conventional focal loss. The auxiliary
+  contrastive term retains the previous ablation's separate reduction.
   """
 
   def __init__(self, weight):
     super().__init__()
     self.register_buffer("weight", weight)
+    self.gamma = 2.0
     self.contrastive_weight = 0.1
     self.contrastive_margin = 1.0
 
@@ -83,7 +84,8 @@ class BinaryCrossEntropyLoss(nn.Module):
 
     Normalize in float32 and use cosine distance in [0, 2]. Positive loss
     is squared distance; negative loss is squared hinge distance to margin
-    1 (cosine similarity <= 0). Class weighting and reduction match BCE.
+    1 (cosine similarity <= 0). Normalize by the class-weight sum, preserving
+    the BCE + contrastive ablation rather than adopting focal's batch mean.
     Only provided pair labels are used, never assumed in-batch negatives.
     """
     left = F.normalize(group1.float(), dim=-1)
@@ -98,11 +100,10 @@ class BinaryCrossEntropyLoss(nn.Module):
     return (losses * sample_weights).sum() / sample_weights.sum()
 
   def forward(self, logits, targets):
-    # Subtract in float32 to avoid overflow/precision loss under autocast.
-    binary_logits = logits[:, 1].float() - logits[:, 0].float()
-    losses = F.binary_cross_entropy_with_logits(binary_logits, targets.float(), reduction="none")
-    sample_weights = self.weight[targets]
-    return (losses * sample_weights).sum() / sample_weights.sum()
+    # Intentionally retain weighted-CE modulation from the historical baseline.
+    ce = F.cross_entropy(logits.float(), targets, weight=self.weight, reduction="none")
+    pt = torch.exp(-ce)
+    return ((1.0 - pt).pow(self.gamma) * ce).mean()
 
 
 def _set_training_seed(seed: int):
@@ -126,7 +127,7 @@ def _build_classification_loss(labels: torch.Tensor, mask: torch.Tensor):
     dtype=torch.float,
     device=DEVICE,
   )
-  return BinaryCrossEntropyLoss(weight=weights)
+  return FocalCrossEntropyLoss(weight=weights)
 
 
 def _safe_auroc(labels, scores):
@@ -405,7 +406,7 @@ best_state = None
 for epoch in range(EPOCHS):
   model.train()
   total_loss = 0.0
-  total_bce_loss = 0.0
+  total_focal_loss = 0.0
   total_contrastive_loss = 0.0
 
   for batch in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{EPOCHS}"):
@@ -414,11 +415,11 @@ for epoch in range(EPOCHS):
       mask = label_mask[:, task_idx]
       logits = outputs[TASK_NAME][mask]
       targets = raw_labels[mask, task_idx].long()
-      bce_loss = criterion(logits, targets)
+      focal_loss = criterion(logits, targets)
       contrastive_loss = criterion.contrastive(
         outputs["group1_embeddings"][mask], outputs["group2_embeddings"][mask], targets,
       )
-      loss = bce_loss + criterion.contrastive_weight * contrastive_loss
+      loss = focal_loss + criterion.contrastive_weight * contrastive_loss
 
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
@@ -426,7 +427,7 @@ for epoch in range(EPOCHS):
     optimizer.step()
     scheduler.step()
     total_loss += loss.item()
-    total_bce_loss += bce_loss.item()
+    total_focal_loss += focal_loss.item()
     total_contrastive_loss += contrastive_loss.item()
 
   model.eval()
@@ -444,7 +445,7 @@ for epoch in range(EPOCHS):
   specificity_msg = "nan" if report["specificity"] is None else f"{report['specificity']:.4f}"
   print(
     f"Train Loss: {total_loss / len(train_loader):.4f} "
-    f"(BCE={total_bce_loss / len(train_loader):.4f} "
+    f"(focal={total_focal_loss / len(train_loader):.4f} "
     f"contrastive={total_contrastive_loss / len(train_loader):.4f}, weight={criterion.contrastive_weight}) | Val "
     f"interaction:ACC={report['acc']:.4f} BAL_ACC={report['balanced_accuracy']:.4f} "
     f"SPEC={specificity_msg} MCC={report['mcc']:.4f} F1={report['f1']:.4f} AUROC={auroc_msg} "
@@ -507,10 +508,14 @@ save_run(
       "task_metas": task_metas,
       "task_output_dims": task_output_dims,
       "interaction_loss": INTERACTION_LOSS,
+      "focal_gamma": criterion.gamma,
+      "focal_modulation": "exp_negative_weighted_ce",
+      "focal_reduction": "batch_mean",
       "contrastive_weight": criterion.contrastive_weight,
       "contrastive_margin": criterion.contrastive_margin,
       "contrastive_distance": "cosine",
       "contrastive_class_weighted": True,
+      "contrastive_reduction": "class_weight_sum",
       "interaction_pos_neg_ratio": INTERACTION_POS_NEG_RATIO,
       "source_balanced_sampling": SOURCE_BALANCED_SAMPLING,
       "used_backbone_embedding_cache": embedding_cache is not None,
@@ -528,8 +533,9 @@ save_run(
   run_dir,
   notes=(
     f"# Run {run_dir.name}\n\nInteraction-only training with a frozen ProstT5 backbone and adapters.\n\n"
-    "BCE + pairwise contrastive ablation with residue max and group mean pooling.\n"
-    "Both terms use class weights and weight-sum normalization. Contrastive loss uses\n"
+    "Class-weighted focal + pairwise contrastive ablation with residue max and group mean pooling.\n"
+    f"Historical focal uses gamma {criterion.gamma}, exp(-weighted CE) modulation, and batch-mean reduction.\n"
+    "Contrastive retains class-weight-sum normalization and uses\n"
     "normalized group embeddings, squared cosine distance for positives, and a squared\n"
     f"hinge for negatives (margin {criterion.contrastive_margin}, weight {criterion.contrastive_weight}).\n"
   ),

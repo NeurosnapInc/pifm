@@ -352,7 +352,7 @@ Test:
 - [x] BCE
 - [x] BCE + contrastive term
 - [x] Class-Weighted Focal Loss
-- [ ] Class-Weighted Focal Loss + contrastive term
+- [x] Class-Weighted Focal Loss + contrastive term
 
 ## Project Inspiration
 This project builds upon our previous work on **Prot2Prop**, a lightweight framework for multitask protein property prediction using pretrained protein language models.
