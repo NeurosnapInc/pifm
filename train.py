@@ -30,7 +30,6 @@ from config import (
   DROPOUT,
   EPOCHS,
   EVAL_MAX_TOKENS_PER_BATCH,
-  FOCAL_GAMMA,
   INTERACTION_LOSS,
   INTERACTION_POS_NEG_RATIO,
   LR,
@@ -64,16 +63,25 @@ USE_FUSED_ADAMW = DEVICE.type == "cuda"
 TASK_NAME = "interaction"
 
 
-class FocalCrossEntropyLoss(nn.Module):
-  def __init__(self, weight=None, gamma=2.0):
+class BinaryCrossEntropyLoss(nn.Module):
+  """Stable weighted BCE for the existing two-logit interaction head.
+
+  The positive-minus-negative logit has sigmoid probability equal to the
+  two-class softmax positive probability. Weight both classes and normalize
+  by their observed weight sum, matching weighted cross-entropy without focal
+  modulation while leaving model outputs and evaluation unchanged.
+  """
+
+  def __init__(self, weight):
     super().__init__()
-    self.register_buffer("weight", weight if weight is not None else None)
-    self.gamma = gamma
+    self.register_buffer("weight", weight)
 
   def forward(self, logits, targets):
-    ce = F.cross_entropy(logits, targets, weight=self.weight, reduction="none")
-    pt = torch.exp(-ce)
-    return ((1.0 - pt).pow(self.gamma) * ce).mean()
+    # Subtract in float32 to avoid overflow/precision loss under autocast.
+    binary_logits = logits[:, 1].float() - logits[:, 0].float()
+    losses = F.binary_cross_entropy_with_logits(binary_logits, targets.float(), reduction="none")
+    sample_weights = self.weight[targets]
+    return (losses * sample_weights).sum() / sample_weights.sum()
 
 
 def _set_training_seed(seed: int):
@@ -97,11 +105,7 @@ def _build_classification_loss(labels: torch.Tensor, mask: torch.Tensor):
     dtype=torch.float,
     device=DEVICE,
   )
-  if INTERACTION_LOSS == "ce":
-    return nn.CrossEntropyLoss(weight=weights)
-  if INTERACTION_LOSS == "focal":
-    return FocalCrossEntropyLoss(weight=weights, gamma=FOCAL_GAMMA)
-  raise ValueError(f"Unsupported INTERACTION_LOSS={INTERACTION_LOSS!r}")
+  return BinaryCrossEntropyLoss(weight=weights)
 
 
 def _safe_auroc(labels, scores):
@@ -472,7 +476,6 @@ save_run(
       "task_metas": task_metas,
       "task_output_dims": task_output_dims,
       "interaction_loss": INTERACTION_LOSS,
-      "focal_gamma": FOCAL_GAMMA,
       "interaction_pos_neg_ratio": INTERACTION_POS_NEG_RATIO,
       "source_balanced_sampling": SOURCE_BALANCED_SAMPLING,
       "used_backbone_embedding_cache": embedding_cache is not None,

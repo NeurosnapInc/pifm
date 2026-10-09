@@ -349,7 +349,7 @@ Test:
 - [ ] Hard negative mining
 
 ### Loss Functions
-- [ ] BCE
+- [x] BCE
 - [ ] Contrastive loss
 - [x] Focal loss variants
 
