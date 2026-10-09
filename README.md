@@ -327,6 +327,14 @@ Evaluate permutation-invariant approaches:
 - [x] DeepSets
 - [x] Set Transformer
 
+#### Ablation Results:
+- **Winner: mean group pooling** (`2026-10-08_01-46_seed_1`): highest validation AUROC (0.9551) and test AUROC (0.9356), with calibrated test balanced accuracy 0.8692, specificity 0.8148, and MCC 0.6611.
+- Set Transformer had the highest test AUPRC (0.9876), but lower calibrated balanced accuracy (0.8416) and MCC (0.6298); it added 13 false positives for seven fewer false negatives versus mean.
+- Max improved default-threshold test recall but trailed mean after calibration; DeepSets substantially weakened negative detection (calibrated test specificity 0.2130).
+- Retain **residue max + group mean**. Results are single-seed evidence, IntAct positive recall remains weak, and repeated test inspection warrants a fresh final holdout. Full comparison: [final ablation notes](runs/2026-10-09_00-41_seed_1/notes.md).
+
+#### Ablation Results:
+
 ### Interaction Module
 Test:
 - [x] Pairwise interaction features
