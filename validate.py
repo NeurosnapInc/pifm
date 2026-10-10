@@ -18,22 +18,19 @@ from calibration import (
 )
 from run_utils import load_run, save_json
 from config import (
-  ADAPTER_DIM,
-  BACKBONE_EMBEDDING_CACHE_PATH,
   BATCH_SIZE,
   CLASSIFICATION_HEAD_HIDDEN,
   DROPOUT,
   EVAL_MAX_TOKENS_PER_BATCH,
   MODEL_NAME,
   TRAIN_CACHE_PATH,
-  USE_BACKBONE_EMBEDDING_CACHE,
 )
 from model import (
   MultiTaskBatchSampler,
   MultiTaskGroupPairDataset,
   MultiTaskGroupPairModel,
+  LoRALinear,
   collate_multitask_batch,
-  load_backbone_embedding_cache,
   output_dim_from_meta,
 )
 
@@ -135,27 +132,6 @@ def parse_args():
   return args
 
 
-def _load_embedding_cache(model_name, tokenized_cache_path):
-  if USE_BACKBONE_EMBEDDING_CACHE and BACKBONE_EMBEDDING_CACHE_PATH.exists():
-    embedding_cache, payload = load_backbone_embedding_cache(
-      BACKBONE_EMBEDDING_CACHE_PATH,
-      expected_model_name=model_name,
-      expected_tokenized_cache_path=tokenized_cache_path,
-    )
-    print(
-      f"Using frozen backbone embedding cache from {BACKBONE_EMBEDDING_CACHE_PATH} "
-      f"sequences={payload.get('num_sequences', len(embedding_cache))}"
-    )
-    return embedding_cache
-
-  if USE_BACKBONE_EMBEDDING_CACHE:
-    print(
-      f"Backbone embedding cache not found at {BACKBONE_EMBEDDING_CACHE_PATH}; "
-      "falling back to on-the-fly ProstT5 encoding."
-    )
-  return None
-
-
 def evaluate_run(run_path, cache_path=DEFAULT_CACHE_PATH, splits=("validation", "test"), batch_size=BATCH_SIZE,
                         model=None, payload=None, embedding_cache=None):
   """Evaluate selected splits and atomically update metrics.json without rewriting weights.
@@ -172,6 +148,16 @@ def evaluate_run(run_path, cache_path=DEFAULT_CACHE_PATH, splits=("validation", 
 
   print("Loading checkpoint and tokenized cache")
   run_dir, checkpoint = load_run(run_path)
+  if checkpoint["config"].get("fine_tuning") != "lora" or "lora_state_dict" not in checkpoint:
+    raise ValueError("Current architecture is LoRA-only. Evaluate older adapter runs using their recorded git_commit.")
+  expected_lora = {
+    "lora_rank": LoRALinear.rank, "lora_alpha": LoRALinear.alpha,
+    "lora_dropout": LoRALinear.dropout_prob, "lora_targets": ["q", "v"],
+  }
+  if any(checkpoint["config"].get(key) != value for key, value in expected_lora.items()):
+    raise ValueError("Run LoRA settings do not match the current architecture; use its recorded git_commit.")
+  if embedding_cache is not None:
+    raise ValueError("LoRA evaluation cannot use frozen backbone embedding caches.")
   if payload is None:
     payload = torch.load(cache_path, map_location="cpu")
 
@@ -188,8 +174,6 @@ def evaluate_run(run_path, cache_path=DEFAULT_CACHE_PATH, splits=("validation", 
   train_split = payload["splits"]["train"]
   task_idx = task_order.index(TASK_NAME)
   model_name = checkpoint["config"].get("model_name", MODEL_NAME)
-  if model is None:
-    embedding_cache = _load_embedding_cache(model_name, cache_path)
 
   train_mask = train_split["label_mask"][:, task_idx]
   train_labels = train_split["raw_labels"][:, task_idx]
@@ -199,12 +183,9 @@ def evaluate_run(run_path, cache_path=DEFAULT_CACHE_PATH, splits=("validation", 
 
   if model is None:
     embed_dim = checkpoint["config"]["embed_dim"]
-    if embedding_cache is None:
-      base_model = T5EncoderModel.from_pretrained(model_name).to(DEVICE)
-      if DEVICE.type == "cuda":
-        base_model.bfloat16()
-    else:
-      base_model = None
+    base_model = T5EncoderModel.from_pretrained(model_name).to(DEVICE)
+    if DEVICE.type == "cuda":
+      base_model.bfloat16()
 
     model = MultiTaskGroupPairModel(
       base_model,
@@ -212,12 +193,11 @@ def evaluate_run(run_path, cache_path=DEFAULT_CACHE_PATH, splits=("validation", 
       task_output_dims,
       embed_dim=embed_dim,
       task_metas=task_metas,
-      adapter_dim=checkpoint["config"].get("adapter_dim", ADAPTER_DIM),
       dropout=checkpoint["config"].get("dropout", DROPOUT),
       classification_head_hidden=checkpoint["config"].get("classification_head_hidden", CLASSIFICATION_HEAD_HIDDEN),
     ).to(DEVICE)
 
-    model.adapter.load_state_dict(checkpoint["adapter_state_dict"])
+    model.load_lora_state_dict(checkpoint["lora_state_dict"])
     model.residue_pool.load_state_dict(checkpoint["residue_pool_state_dict"])
     model.group_pool.load_state_dict(checkpoint["group_pool_state_dict"])
     model.pair_mlp.load_state_dict(checkpoint["pair_mlp_state_dict"])

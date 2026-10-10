@@ -305,7 +305,7 @@ This enables:
 ## TODO / Experiments
 ### Fine-Tuning Strategy
 - [x] Frozen backbone + Adapters
-- [ ] Frozen backbone + LoRA
+- [x] Frozen backbone + LoRA
 
 ### Residue → Chain Pooling
 - [x] Mean pooling

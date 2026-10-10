@@ -10,7 +10,6 @@ import torch.nn as nn
 from torch.utils.data import Dataset, Sampler
 
 from config import (
-  ADAPTER_DIM,
   CLASSIFICATION_HEAD_HIDDEN,
   DROPOUT,
   PAIR_MLP_HIDDEN,
@@ -130,22 +129,32 @@ class MultiTaskBatchSampler(Sampler):
     return math.ceil(self.num_samples / self.batch_size)
 
 
-class Adapter(nn.Module):
-  def __init__(self, input_dim, adapter_dim=ADAPTER_DIM, dropout_prob=DROPOUT):
+class LoRALinear(nn.Module):
+  """Add a rank-8 update to a frozen attention projection.
+
+  A is randomly initialized and B starts at zero, preserving the pretrained
+  function initially. Updates use alpha/rank scaling and float32 trainable
+  parameters even when the frozen backbone weights use bfloat16.
+  """
+
+  rank = 8
+  alpha = 16
+  dropout_prob = 0.1
+
+  def __init__(self, projection):
     super().__init__()
-    self.norm = nn.LayerNorm(input_dim)
-    self.down_project = nn.Linear(input_dim, adapter_dim)
-    self.activation = nn.GELU()
-    self.up_project = nn.Linear(adapter_dim, input_dim)
-    self.dropout = nn.Dropout(dropout_prob)
-    self.scale = nn.Parameter(torch.tensor(1e-3))
-    nn.init.normal_(self.down_project.weight, std=1e-3)
-    nn.init.normal_(self.up_project.weight, std=1e-3)
-    nn.init.zeros_(self.up_project.bias)
+    self.projection = projection
+    self.projection.requires_grad_(False)
+    self.lora_A = nn.Linear(projection.in_features, self.rank, bias=False, device=projection.weight.device)
+    self.lora_B = nn.Linear(self.rank, projection.out_features, bias=False, device=projection.weight.device)
+    nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))
+    nn.init.zeros_(self.lora_B.weight)
+    self.dropout = nn.Dropout(self.dropout_prob)
 
   def forward(self, x):
-    x_norm = self.norm(x)
-    return self.scale * self.dropout(self.up_project(self.activation(self.down_project(x_norm))))
+    original = self.projection(x)
+    update = self.lora_B(self.lora_A(self.dropout(x).to(self.lora_A.weight.dtype)))
+    return original + (update * (self.alpha / self.rank)).to(original.dtype)
 
 
 class MaxPool(nn.Module):
@@ -199,17 +208,24 @@ class MultiTaskGroupPairModel(nn.Module):
     task_output_dims,
     embed_dim,
     task_metas=None,
-    adapter_dim=ADAPTER_DIM,
     dropout=DROPOUT,
     classification_head_hidden=CLASSIFICATION_HEAD_HIDDEN,
   ):
     super().__init__()
+    if base_model is None:
+      raise ValueError("LoRA requires live ProstT5 token encoding; backbone embedding caches cannot be used.")
     self.base = base_model
-    if self.base is not None:
-      for param in self.base.parameters():
-        param.requires_grad = False
+    self.base.requires_grad_(False)
+    attention_layers = [module for name, module in self.base.named_modules() if name.endswith(".SelfAttention")]
+    if not attention_layers:
+      raise ValueError("No T5 self-attention layers found for LoRA injection.")
+    for attention in attention_layers:
+      for name in ("q", "v"):
+        projection = getattr(attention, name)
+        if not isinstance(projection, nn.Linear):
+          raise ValueError(f"Expected an unmodified linear {name} projection for LoRA injection.")
+        setattr(attention, name, LoRALinear(projection))
 
-    self.adapter = Adapter(embed_dim, adapter_dim, dropout_prob=dropout)
     self.residue_pool = MaxPool()
     self.group_pool = MeanPool()
     self.pair_mlp = nn.Sequential(
@@ -223,15 +239,30 @@ class MultiTaskGroupPairModel(nn.Module):
     for task_name in task_order:
       self.heads[task_name] = PairTaskHead(PAIR_MLP_HIDDEN, task_output_dims[task_name], classification_head_hidden, dropout=dropout)
 
+  def lora_state_dict(self):
+    """Return only LoRA matrices, excluding the frozen pretrained weights."""
+    return {
+      f"{name}.{key}": value
+      for name, module in self.base.named_modules() if isinstance(module, LoRALinear)
+      for key, value in (("lora_A.weight", module.lora_A.weight), ("lora_B.weight", module.lora_B.weight))
+    }
+
+  def load_lora_state_dict(self, state):
+    """Load all LoRA matrices strictly, rejecting missing or extra keys/shapes."""
+    expected = self.lora_state_dict()
+    if set(state) != set(expected):
+      raise ValueError("LoRA checkpoint keys do not match the current backbone projections.")
+    if any(state[key].shape != value.shape for key, value in expected.items()):
+      raise ValueError("LoRA checkpoint matrix shapes do not match the current architecture.")
+    with torch.no_grad():
+      for key, value in expected.items():
+        value.copy_(state[key])
+
   def encode_shared_tokens(self, input_ids, attention_mask, precomputed_embeddings=None):
-    if precomputed_embeddings is None:
-      if self.base is None:
-        raise ValueError("A base model is required when precomputed embeddings are not provided.")
-      out = self.base(input_ids=input_ids.long(), attention_mask=attention_mask.long())
-      token_repr = out.last_hidden_state
-    else:
-      token_repr = precomputed_embeddings.to(dtype=self.adapter.norm.weight.dtype)
-    return token_repr + self.adapter(token_repr)
+    if precomputed_embeddings is not None:
+      raise ValueError("Frozen backbone embeddings bypass LoRA; provide token IDs instead.")
+    out = self.base(input_ids=input_ids.long(), attention_mask=attention_mask.long())
+    return out.last_hidden_state.to(self.pair_mlp[0].weight.dtype)
 
   def _pool_group(self, chain_embeddings, chain_to_sample, chain_to_group, batch_size: int, group_id: int):
     group_embeddings = []
@@ -264,14 +295,10 @@ class MultiTaskGroupPairModel(nn.Module):
     group1_embeddings = self._pool_group(chain_embeddings, chain_to_sample, chain_to_group, batch_size, group_id=0)
     group2_embeddings = self._pool_group(chain_embeddings, chain_to_sample, chain_to_group, batch_size, group_id=1)
     pair_hidden = self.pair_mlp(self._pair_features(group1_embeddings, group2_embeddings))
-    outputs = {
+    return {
       task_name: head(pair_hidden)
       for task_name, head in self.heads.items()
     }
-    # The auxiliary loss needs undetached group vectors to train the adapter.
-    outputs["group1_embeddings"] = group1_embeddings
-    outputs["group2_embeddings"] = group2_embeddings
-    return outputs
 
 
 def unwrap_model(model):
