@@ -117,6 +117,34 @@ class CheckpointWorkflowTests(unittest.TestCase):
         self.evaluate(model=self.model, embedding_cache=self.embeddings)
     self.assertEqual(self.metrics_path.read_bytes(), original)
 
+  def test_nonfinite_logits_fail_before_metrics_are_written(self):
+    original = self.metrics_path.read_bytes()
+    bad_logits = torch.full((3, 2), float("nan"))
+    with patch.object(self.model.heads["interaction"], "forward", return_value=bad_logits):
+      with self.assertRaisesRegex(FloatingPointError, "Non-finite logits"):
+        self.evaluate(model=self.model, embedding_cache=self.embeddings, splits=("validation",))
+    self.assertEqual(self.metrics_path.read_bytes(), original)
+
+  def test_cross_attention_stays_float32_and_backpropagates_under_autocast(self):
+    left = torch.randn(2, 3, 8, requires_grad=True)
+    right = torch.randn(2, 2, 8, requires_grad=True)
+    mask1 = torch.tensor([[True, True, False], [True, False, False]])
+    mask2 = torch.tensor([[True, True], [True, False]])
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+      a, b = self.model.interaction(left, mask1, right, mask2)
+      loss = a.square().mean() + b.square().mean()
+    self.assertEqual(a.dtype, torch.float32)
+    self.assertEqual(b.dtype, torch.float32)
+    loss.backward()
+    for parameter in self.model.interaction.parameters():
+      self.assertIsNotNone(parameter.grad)
+      self.assertTrue(torch.isfinite(parameter.grad).all())
+    self.assertTrue(torch.isfinite(left.grad).all())
+    self.assertTrue(torch.isfinite(right.grad).all())
+    ids = torch.tensor([[1, 2, 3]])
+    with self.assertRaisesRegex(FloatingPointError, "Non-finite backbone embeddings"):
+      self.model.encode_shared_tokens(ids, torch.ones_like(ids), torch.full((1, 3, 8), float("nan")))
+
   def test_atomic_save_failure_preserves_metrics(self):
     original = self.metrics_path.read_bytes()
     with patch("run_utils.os.replace", side_effect=RuntimeError("disk error")):

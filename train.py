@@ -71,7 +71,7 @@ class FocalCrossEntropyLoss(nn.Module):
     self.gamma = gamma
 
   def forward(self, logits, targets):
-    ce = F.cross_entropy(logits, targets, weight=self.weight, reduction="none")
+    ce = F.cross_entropy(logits.float(), targets, weight=self.weight, reduction="none")
     pt = torch.exp(-ce)
     return ((1.0 - pt).pow(self.gamma) * ce).mean()
 
@@ -228,7 +228,7 @@ def _collect_predictions(model, loader, task_idx):
   predictions = {"labels": [], "preds": [], "scores": []}
 
   with torch.no_grad():
-    for batch in loader:
+    for batch_idx, batch in enumerate(loader, start=1):
       with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=AMP_ENABLED):
         outputs, raw_labels, label_mask = _forward_model(model, batch)
 
@@ -236,6 +236,8 @@ def _collect_predictions(model, loader, task_idx):
       if not mask.any():
         continue
       logits = outputs[TASK_NAME][mask].float()
+      if not torch.isfinite(logits).all():
+        raise FloatingPointError(f"Non-finite validation logits at batch {batch_idx}; sources={batch[-1]!r}.")
       probs = torch.softmax(logits, dim=1)
       preds = probs.argmax(dim=1)
       labels = raw_labels[mask, task_idx].long()
@@ -371,6 +373,71 @@ num_training_steps = len(train_loader) * EPOCHS
 num_warmup_steps = int(WARMUP_RATIO * num_training_steps)
 scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps)
 
+def _save_current_best(model_ref, best_state, calibration, run_dir, saved_at):
+  """Persist the current best model before another epoch can fail."""
+  run_date = saved_at.date().isoformat()
+  save_run(
+    {
+      "adapter_state_dict": model_ref.adapter.state_dict(),
+      "residue_pool_state_dict": model_ref.residue_pool.state_dict(),
+      "group_pool_state_dict": model_ref.group_pool.state_dict(),
+      "interaction_state_dict": model_ref.interaction.state_dict(),
+      "pair_mlp_state_dict": model_ref.pair_mlp.state_dict(),
+      "head_state_dicts": {task_name: head.state_dict() for task_name, head in model_ref.heads.items()},
+      "config": {
+        "git_commit": git_revision(),
+        "settings": {name: value for name, value in vars(run_configuration).items() if name.isupper()},
+        "embed_dim": embed_dim,
+        "adapter_dim": ADAPTER_DIM,
+        "fine_tuning": "adapters",
+        "interaction_module": "bidirectional_chain_cross_attention",
+        "interaction_hidden_dim": 256,
+        "interaction_heads": 4,
+        "interaction_precision": "float32_math_attention",
+        "dropout": DROPOUT,
+        "classification_head_hidden": CLASSIFICATION_HEAD_HIDDEN,
+        "model_name": MODEL_NAME,
+        "tokenized_data_path": str(TRAIN_CACHE_PATH),
+        "task_names": task_order,
+        "task_metas": task_metas,
+        "task_output_dims": task_output_dims,
+        "interaction_loss": INTERACTION_LOSS,
+        "focal_gamma": criterion.gamma,
+        "focal_modulation": "exp_negative_weighted_ce",
+        "focal_reduction": "batch_mean",
+        "interaction_pos_neg_ratio": INTERACTION_POS_NEG_RATIO,
+        "source_balanced_sampling": SOURCE_BALANCED_SAMPLING,
+        "used_backbone_embedding_cache": embedding_cache is not None,
+        "backbone_embedding_cache_path": str(BACKBONE_EMBEDDING_CACHE_PATH) if embedding_cache is not None else None,
+        "calibration": calibration,
+        "training_seed": TRAINING_SEED,
+        "run_date": run_date,
+        "run_timestamp": saved_at.isoformat(timespec="seconds"),
+        "best_selection_metric": best_state["selection_metric"] if best_state else None,
+        "best_task_report": best_state["task_report"] if best_state else None,
+        "classification_selection_metric": CLASSIFICATION_SELECTION_METRIC,
+        "min_classification_val_labels": MIN_CLASSIFICATION_VAL_LABELS,
+      },
+    },
+    run_dir,
+    notes=(
+      f"# Run {run_dir.name}\n\nFrozen ProstT5 + adapters with residue max pooling.\n\n"
+      "Interaction ablation: shared bidirectional chain-level cross-attention between groups\n"
+      "(256-dimensional internal width, four heads, no positional encodings), followed by\n"
+      "group mean pooling and the existing symmetric pair-feature classifier.\n"
+      "Historical class-weighted focal loss only (gamma 2, exp(-weighted CE), batch mean).\n"
+      "Frozen backbone embedding caches are reusable; no LoRA or contrastive term.\n"
+      "Variable chain-set packing uses eager execution rather than torch.compile.\n"
+      "Cross-attention uses float32 math attention; non-finite inputs/logits/loss/gradients abort training.\n"
+      "Each validation-AUROC improvement is checkpointed immediately.\n"
+    ),
+  )
+
+
+saved_at = datetime.now().astimezone()
+run_dir = create_run_directory(RUNS_DIR, TRAINING_SEED, saved_at)
+print(f"Run directory -> {run_dir}")
+
 best_metric = -float("inf")
 stale = 0
 best_state = None
@@ -379,17 +446,30 @@ for epoch in range(EPOCHS):
   model.train()
   total_loss = 0.0
 
-  for batch in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{EPOCHS}"):
+  for batch_idx, batch in enumerate(tqdm(train_loader, desc=f"Epoch {epoch + 1}/{EPOCHS}"), start=1):
     with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=AMP_ENABLED):
       outputs, raw_labels, label_mask = _forward_model(model, batch)
       mask = label_mask[:, task_idx]
       logits = outputs[TASK_NAME][mask]
+      if not torch.isfinite(logits).all():
+        raise FloatingPointError(f"Non-finite training logits at epoch {epoch + 1}, batch {batch_idx}; sources={batch[-1]!r}.")
       targets = raw_labels[mask, task_idx].long()
       loss = criterion(logits, targets)
 
+    if not torch.isfinite(loss):
+      raise FloatingPointError(f"Non-finite loss at epoch {epoch + 1}, batch {batch_idx}; optimizer not stepped.")
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
-    torch.nn.utils.clip_grad_norm_(trainable_params, 1.0)
+    # Clipping NaN gradients otherwise poisons every parameter in the optimizer step.
+    try:
+      torch.nn.utils.clip_grad_norm_(trainable_params, 1.0, error_if_nonfinite=True)
+    except RuntimeError as exc:
+      bad_names = [name for name, param in model_ref.named_parameters()
+                   if param.grad is not None and not torch.isfinite(param.grad).all()]
+      raise FloatingPointError(
+        f"Gradient clipping failed at epoch {epoch + 1}, batch {batch_idx}; "
+        f"non-finite gradients in {bad_names}; optimizer not stepped."
+      ) from exc
     optimizer.step()
     scheduler.step()
     total_loss += loss.item()
@@ -429,6 +509,9 @@ for epoch in range(EPOCHS):
       "task_report": report,
       "validation_predictions": val_predictions,
     }
+    calibration = fit_posthoc_calibration(val_predictions, task_metas, calibration_split="validation")
+    _save_current_best(model_ref, best_state, calibration, run_dir, saved_at)
+    print(f"Saved improved checkpoint -> {run_dir}")
   else:
     stale += 1
     if stale >= PATIENCE:
@@ -449,62 +532,7 @@ else:
   calibration = None
 
 model_ref = unwrap_model(model)
-saved_at = datetime.now().astimezone()
-run_date = saved_at.date().isoformat()
-run_dir = create_run_directory(RUNS_DIR, TRAINING_SEED, saved_at)
-save_run(
-  {
-    "adapter_state_dict": model_ref.adapter.state_dict(),
-    "residue_pool_state_dict": model_ref.residue_pool.state_dict(),
-    "group_pool_state_dict": model_ref.group_pool.state_dict(),
-    "interaction_state_dict": model_ref.interaction.state_dict(),
-    "pair_mlp_state_dict": model_ref.pair_mlp.state_dict(),
-    "head_state_dicts": {task_name: head.state_dict() for task_name, head in model_ref.heads.items()},
-    "config": {
-      "git_commit": git_revision(),
-      "settings": {name: value for name, value in vars(run_configuration).items() if name.isupper()},
-      "embed_dim": embed_dim,
-      "adapter_dim": ADAPTER_DIM,
-      "fine_tuning": "adapters",
-      "interaction_module": "bidirectional_chain_cross_attention",
-      "interaction_hidden_dim": 256,
-      "interaction_heads": 4,
-      "dropout": DROPOUT,
-      "classification_head_hidden": CLASSIFICATION_HEAD_HIDDEN,
-      "model_name": MODEL_NAME,
-      "tokenized_data_path": str(TRAIN_CACHE_PATH),
-      "task_names": task_order,
-      "task_metas": task_metas,
-      "task_output_dims": task_output_dims,
-      "interaction_loss": INTERACTION_LOSS,
-      "focal_gamma": criterion.gamma,
-      "focal_modulation": "exp_negative_weighted_ce",
-      "focal_reduction": "batch_mean",
-      "interaction_pos_neg_ratio": INTERACTION_POS_NEG_RATIO,
-      "source_balanced_sampling": SOURCE_BALANCED_SAMPLING,
-      "used_backbone_embedding_cache": embedding_cache is not None,
-      "backbone_embedding_cache_path": str(BACKBONE_EMBEDDING_CACHE_PATH) if embedding_cache is not None else None,
-      "calibration": calibration,
-      "training_seed": TRAINING_SEED,
-      "run_date": run_date,
-      "run_timestamp": saved_at.isoformat(timespec="seconds"),
-      "best_selection_metric": best_state["selection_metric"] if best_state else None,
-      "best_task_report": best_state["task_report"] if best_state else None,
-      "classification_selection_metric": CLASSIFICATION_SELECTION_METRIC,
-      "min_classification_val_labels": MIN_CLASSIFICATION_VAL_LABELS,
-    },
-  },
-  run_dir,
-  notes=(
-    f"# Run {run_dir.name}\n\nFrozen ProstT5 + adapters with residue max pooling.\n\n"
-    "Interaction ablation: shared bidirectional chain-level cross-attention between groups\n"
-    "(256-dimensional internal width, four heads, no positional encodings), followed by\n"
-    "group mean pooling and the existing symmetric pair-feature classifier.\n"
-    "Historical class-weighted focal loss only (gamma 2, exp(-weighted CE), batch mean).\n"
-    "Frozen backbone embedding caches are reusable; no LoRA or contrastive term.\n"
-    "Variable chain-set packing uses eager execution rather than torch.compile.\n"
-  ),
-)
+_save_current_best(model_ref, best_state, calibration, run_dir, saved_at)
 print(f"Saved run -> {run_dir}")
 
 if args.validate:

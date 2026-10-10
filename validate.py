@@ -305,6 +305,8 @@ def _evaluate_split(model, payload, embedding_cache, checkpoint, checkpoint_path
         continue
 
       logits = outputs[TASK_NAME][mask].float()
+      if not torch.isfinite(logits).all():
+        raise FloatingPointError(f"Non-finite logits during split={split!r}; sources={sources!r}. Check model weights/input embeddings.")
       probs = torch.softmax(logits, dim=1)
       preds = probs.argmax(dim=1)
       labels = raw_labels[mask, task_idx].long()

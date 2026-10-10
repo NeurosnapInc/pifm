@@ -198,7 +198,9 @@ class CrossGroupAttention(nn.Module):
   weights. No positional encodings are used: chain order is irrelevant and
   swapping the groups swaps the outputs in evaluation mode. Attention uses
   a fixed 256-dimensional internal width before returning to the chain width.
-  Masked keys cannot contribute and padded query outputs are zeroed.
+  Masked keys cannot contribute and padded query outputs are zeroed. This
+  small chain-level block stays in float32 even when token processing uses
+  autocast, avoiding reduced-precision attention and pair-product arithmetic.
   """
 
   def __init__(self, input_dim, dropout=DROPOUT):
@@ -218,7 +220,7 @@ class CrossGroupAttention(nn.Module):
 
   def _attend(self, query, context, query_mask, context_mask):
     attended, _ = self.attention(
-      query, context, context, key_padding_mask=~context_mask.bool(), need_weights=False,
+      query, context, context, key_padding_mask=~context_mask.bool(), need_weights=True,
     )
     hidden = self.attention_norm(query + attended)
     hidden = self.output_norm(hidden + self.feedforward(hidden))
@@ -227,9 +229,11 @@ class CrossGroupAttention(nn.Module):
   def forward(self, group1, mask1, group2, mask2):
     if not mask1.bool().any(dim=1).all() or not mask2.bool().any(dim=1).all():
       raise ValueError("Cross-attention requires at least one valid chain in each group.")
-    left = self.project(group1.masked_fill(~mask1.bool().unsqueeze(-1), 0))
-    right = self.project(group2.masked_fill(~mask2.bool().unsqueeze(-1), 0))
-    return self._attend(left, right, mask1, mask2), self._attend(right, left, mask2, mask1)
+    # Chain sets are small; explicit float32 attention avoids the autocast/SDPA path.
+    with torch.autocast(device_type=group1.device.type, enabled=False):
+      left = self.project(group1.float().masked_fill(~mask1.bool().unsqueeze(-1), 0))
+      right = self.project(group2.float().masked_fill(~mask2.bool().unsqueeze(-1), 0))
+      return self._attend(left, right, mask1, mask2), self._attend(right, left, mask2, mask1)
 
 
 class MultiTaskGroupPairModel(nn.Module):
@@ -273,6 +277,8 @@ class MultiTaskGroupPairModel(nn.Module):
       token_repr = out.last_hidden_state
     else:
       token_repr = precomputed_embeddings.to(dtype=self.adapter.norm.weight.dtype)
+    if not torch.isfinite(token_repr).all():
+      raise FloatingPointError("Non-finite backbone embeddings detected before the adapter; check the embedding cache/input.")
     return token_repr + self.adapter(token_repr)
 
   def _pack_group(self, chain_embeddings, chain_to_sample, chain_to_group, batch_size: int, group_id: int):
