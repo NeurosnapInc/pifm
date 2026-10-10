@@ -333,8 +333,6 @@ Evaluate permutation-invariant approaches:
 - Max improved default-threshold test recall but trailed mean after calibration; DeepSets substantially weakened negative detection (calibrated test specificity 0.2130).
 - Retain **residue max + group mean**. Results are single-seed evidence, IntAct positive recall remains weak, and repeated test inspection warrants a fresh final holdout. Full comparison: [final ablation notes](runs/2026-10-09_00-41_seed_1/notes.md).
 
-#### Ablation Results:
-
 ### Interaction Module
 Test:
 - [x] Pairwise interaction features
@@ -353,6 +351,12 @@ Test:
 - [x] BCE + contrastive term
 - [x] Class-Weighted Focal Loss
 - [x] Class-Weighted Focal Loss + contrastive term
+
+#### Ablation Results:
+- **Winner: class-weighted focal alone** (`2026-10-08_01-46_seed_1`): best validation AUROC (0.9551), test AUROC/AUPRC (0.9356/0.9856), and calibrated test balanced accuracy/MCC (0.8692/0.6611).
+- BCE weakened calibrated negative detection (specificity 0.6944 versus focal's 0.8148); BCE + contrastive degraded it further (0.1481).
+- Focal + contrastive achieved the highest calibrated test F1 (0.9514), but recovered 48 positives for 38 additional false positives versus focal alone; balanced accuracy fell to 0.7984 and MCC to 0.6206.
+- Prefer focal alone with **residue max + group mean**. Neither tested contrastive term improved ranking and balanced detection over its classification-only baseline. Single-seed results and historical focal-weighting/reduction caveats apply; full comparison: [loss ablation notes](runs/2026-10-10_00-21_seed_1/notes.md).
 
 ## Project Inspiration
 This project builds upon our previous work on **Prot2Prop**, a lightweight framework for multitask protein property prediction using pretrained protein language models.
