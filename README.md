@@ -336,7 +336,7 @@ Evaluate permutation-invariant approaches:
 ### Interaction Module
 Test:
 - [x] Pairwise interaction features
-- [ ] Cross-attention between groups
+- [x] Cross-attention between groups
 - [ ] Bilinear interaction layers
 - [ ] Small Transformer operating on chain embeddings
 
