@@ -21,6 +21,8 @@ from calibration import fit_posthoc_calibration
 from run_utils import create_run_directory, git_revision, save_run
 import config as run_configuration
 from config import (
+  ADAPTER_DIM,
+  BACKBONE_EMBEDDING_CACHE_PATH,
   BATCH_SAMPLER_SEED,
   BATCH_SIZE,
   CLASSIFICATION_HEAD_HIDDEN,
@@ -39,6 +41,7 @@ from config import (
   TRAIN_CACHE_PATH,
   TRAIN_MAX_TOKENS_PER_BATCH,
   TRAINING_SEED,
+  USE_BACKBONE_EMBEDDING_CACHE,
   WARMUP_RATIO,
   WEIGHT_DECAY,
 )
@@ -46,36 +49,29 @@ from model import (
   MultiTaskBatchSampler,
   MultiTaskGroupPairDataset,
   MultiTaskGroupPairModel,
-  LoRALinear,
   collate_multitask_batch,
+  load_backbone_embedding_cache,
   output_dim_from_meta,
   unwrap_model,
 )
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 AMP_ENABLED = DEVICE.type == "cuda"
-COMPILE_MODEL = False  # Keep live, checkpointed backbone passes out of the dynamic compile path.
+COMPILE_MODEL = False  # Variable chain-set packing stays eager for this ablation.
 PIN_MEMORY = DEVICE.type == "cuda"
 USE_FUSED_ADAMW = DEVICE.type == "cuda"
 TASK_NAME = "interaction"
 
 
 class FocalCrossEntropyLoss(nn.Module):
-  """Historical class-weighted focal objective for the interaction head.
-
-  Preserve the baseline's gamma, weighted-CE modulation, and batch-mean
-  reduction for comparability. Its exp(-weighted_ce) is not the unweighted
-  true-class probability used in conventional focal loss.
-  """
-
-  def __init__(self, weight):
+  """Preserve the winning historical weighted-CE modulation and batch mean."""
+  def __init__(self, weight=None, gamma=2.0):
     super().__init__()
-    self.register_buffer("weight", weight)
-    self.gamma = 2.0
+    self.register_buffer("weight", weight if weight is not None else None)
+    self.gamma = gamma
 
   def forward(self, logits, targets):
-    # Intentionally retain weighted-CE modulation from the historical baseline.
-    ce = F.cross_entropy(logits.float(), targets, weight=self.weight, reduction="none")
+    ce = F.cross_entropy(logits, targets, weight=self.weight, reduction="none")
     pt = torch.exp(-ce)
     return ((1.0 - pt).pow(self.gamma) * ce).mean()
 
@@ -101,7 +97,7 @@ def _build_classification_loss(labels: torch.Tensor, mask: torch.Tensor):
     dtype=torch.float,
     device=DEVICE,
   )
-  return FocalCrossEntropyLoss(weight=weights)
+  return FocalCrossEntropyLoss(weight=weights, gamma=2.0)
 
 
 def _safe_auroc(labels, scores):
@@ -184,6 +180,27 @@ def _compute_sample_weights(split_payload, task_order):
   return weights, {TASK_NAME: int(mask.sum().item())}
 
 
+def _load_embedding_cache():
+  if USE_BACKBONE_EMBEDDING_CACHE and BACKBONE_EMBEDDING_CACHE_PATH.exists():
+    embedding_cache, payload = load_backbone_embedding_cache(
+      BACKBONE_EMBEDDING_CACHE_PATH,
+      expected_model_name=MODEL_NAME,
+      expected_tokenized_cache_path=TRAIN_CACHE_PATH,
+    )
+    print(
+      f"Using frozen backbone embedding cache from {BACKBONE_EMBEDDING_CACHE_PATH} "
+      f"sequences={payload.get('num_sequences', len(embedding_cache))}"
+    )
+    return embedding_cache
+
+  if USE_BACKBONE_EMBEDDING_CACHE:
+    print(
+      f"Backbone embedding cache not found at {BACKBONE_EMBEDDING_CACHE_PATH}; "
+      "falling back to on-the-fly ProstT5 encoding."
+    )
+  return None
+
+
 def _forward_model(model, batch):
   input_ids, input_embeddings, attn_mask, chain_to_sample, chain_to_group, raw_labels, normalized_labels, label_mask, sources = batch
   if input_ids is not None:
@@ -254,8 +271,7 @@ val_split = payload["splits"]["validation"]
 pad_token_id = payload["config"]["pad_token_id"]
 task_idx = task_order.index(TASK_NAME)
 
-embedding_cache = None
-print("LoRA uses live backbone encoding; frozen embedding caches are ignored.")
+embedding_cache = _load_embedding_cache()
 train_ds = MultiTaskGroupPairDataset(train_split, embedding_cache=embedding_cache)
 val_ds = MultiTaskGroupPairDataset(val_split, embedding_cache=embedding_cache)
 train_sample_weights, train_label_counts = _compute_sample_weights(train_split, task_order)
@@ -267,12 +283,14 @@ print(
   f"{train_label_counts[TASK_NAME]}/{int(val_split['label_mask'][:, task_idx].sum().item())}"
 )
 
-base_model = T5EncoderModel.from_pretrained(MODEL_NAME).to(DEVICE)
-if DEVICE.type == "cuda":
-  base_model.bfloat16()
-# Non-reentrant checkpointing propagates LoRA gradients despite frozen embeddings.
-base_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-embed_dim = base_model.config.d_model
+if embedding_cache is None:
+  base_model = T5EncoderModel.from_pretrained(MODEL_NAME).to(DEVICE)
+  if DEVICE.type == "cuda":
+    base_model.bfloat16()
+  embed_dim = base_model.config.d_model
+else:
+  base_model = None
+  embed_dim = next(iter(embedding_cache.values())).shape[-1]
 
 train_loader = DataLoader(
   train_ds,
@@ -314,6 +332,7 @@ model = MultiTaskGroupPairModel(
   task_output_dims,
   embed_dim=embed_dim,
   task_metas=task_metas,
+  adapter_dim=ADAPTER_DIM,
   dropout=DROPOUT,
   classification_head_hidden=CLASSIFICATION_HEAD_HIDDEN,
 ).to(DEVICE)
@@ -326,13 +345,26 @@ if COMPILE_MODEL and hasattr(torch, "compile"):
     print(f"torch.compile unavailable, continuing without compile: {exc}")
 
 model_ref = unwrap_model(model)
-trainable_params = [param for param in model_ref.parameters() if param.requires_grad]
-print(f"Trainable parameters: {sum(param.numel() for param in trainable_params):,} (LoRA + pair MLP/head)")
 optimizer = torch.optim.AdamW(
-  trainable_params,
+  [
+    {"params": model_ref.adapter.parameters()},
+    {"params": model_ref.residue_pool.parameters()},
+    {"params": model_ref.group_pool.parameters()},
+    {"params": model_ref.interaction.parameters()},
+    {"params": model_ref.pair_mlp.parameters()},
+    {"params": model_ref.heads.parameters()},
+  ],
   lr=LR,
   weight_decay=WEIGHT_DECAY,
   fused=USE_FUSED_ADAMW,
+)
+trainable_params = (
+  list(model_ref.adapter.parameters())
+  + list(model_ref.residue_pool.parameters())
+  + list(model_ref.group_pool.parameters())
+  + list(model_ref.interaction.parameters())
+  + list(model_ref.pair_mlp.parameters())
+  + list(model_ref.heads.parameters())
 )
 
 num_training_steps = len(train_loader) * EPOCHS
@@ -387,9 +419,10 @@ for epoch in range(EPOCHS):
     stale = 0
     model_ref = unwrap_model(model)
     best_state = {
-      "lora": {k: v.detach().cpu().clone() for k, v in model_ref.lora_state_dict().items()},
+      "adapter": {k: v.detach().cpu().clone() for k, v in model_ref.adapter.state_dict().items()},
       "residue_pool": {k: v.detach().cpu().clone() for k, v in model_ref.residue_pool.state_dict().items()},
       "group_pool": {k: v.detach().cpu().clone() for k, v in model_ref.group_pool.state_dict().items()},
+      "interaction": {k: v.detach().cpu().clone() for k, v in model_ref.interaction.state_dict().items()},
       "pair_mlp": {k: v.detach().cpu().clone() for k, v in model_ref.pair_mlp.state_dict().items()},
       "heads": {task_name: {k: v.detach().cpu().clone() for k, v in head.state_dict().items()} for task_name, head in model_ref.heads.items()},
       "selection_metric": selection_metric,
@@ -404,9 +437,10 @@ for epoch in range(EPOCHS):
 
 if best_state is not None:
   model_ref = unwrap_model(model)
-  model_ref.load_lora_state_dict(best_state["lora"])
+  model_ref.adapter.load_state_dict(best_state["adapter"])
   model_ref.residue_pool.load_state_dict(best_state["residue_pool"])
   model_ref.group_pool.load_state_dict(best_state["group_pool"])
+  model_ref.interaction.load_state_dict(best_state["interaction"])
   model_ref.pair_mlp.load_state_dict(best_state["pair_mlp"])
   for task_name, state_dict in best_state["heads"].items():
     model_ref.heads[task_name].load_state_dict(state_dict)
@@ -420,21 +454,21 @@ run_date = saved_at.date().isoformat()
 run_dir = create_run_directory(RUNS_DIR, TRAINING_SEED, saved_at)
 save_run(
   {
-    "lora_state_dict": model_ref.lora_state_dict(),
+    "adapter_state_dict": model_ref.adapter.state_dict(),
     "residue_pool_state_dict": model_ref.residue_pool.state_dict(),
     "group_pool_state_dict": model_ref.group_pool.state_dict(),
+    "interaction_state_dict": model_ref.interaction.state_dict(),
     "pair_mlp_state_dict": model_ref.pair_mlp.state_dict(),
     "head_state_dicts": {task_name: head.state_dict() for task_name, head in model_ref.heads.items()},
     "config": {
       "git_commit": git_revision(),
       "settings": {name: value for name, value in vars(run_configuration).items() if name.isupper()},
       "embed_dim": embed_dim,
-      "fine_tuning": "lora",
-      "lora_rank": LoRALinear.rank,
-      "lora_alpha": LoRALinear.alpha,
-      "lora_dropout": LoRALinear.dropout_prob,
-      "lora_targets": ["q", "v"],
-      "gradient_checkpointing": "non_reentrant",
+      "adapter_dim": ADAPTER_DIM,
+      "fine_tuning": "adapters",
+      "interaction_module": "bidirectional_chain_cross_attention",
+      "interaction_hidden_dim": 256,
+      "interaction_heads": 4,
       "dropout": DROPOUT,
       "classification_head_hidden": CLASSIFICATION_HEAD_HIDDEN,
       "model_name": MODEL_NAME,
@@ -449,7 +483,7 @@ save_run(
       "interaction_pos_neg_ratio": INTERACTION_POS_NEG_RATIO,
       "source_balanced_sampling": SOURCE_BALANCED_SAMPLING,
       "used_backbone_embedding_cache": embedding_cache is not None,
-      "backbone_embedding_cache_path": None,
+      "backbone_embedding_cache_path": str(BACKBONE_EMBEDDING_CACHE_PATH) if embedding_cache is not None else None,
       "calibration": calibration,
       "training_seed": TRAINING_SEED,
       "run_date": run_date,
@@ -462,13 +496,13 @@ save_run(
   },
   run_dir,
   notes=(
-    f"# Run {run_dir.name}\n\nFrozen ProstT5 weights with trainable LoRA query/value updates (no adapters).\n\n"
-    f"LoRA rank {LoRALinear.rank}, alpha {LoRALinear.alpha}, dropout {LoRALinear.dropout_prob}; residue max/group mean pooling.\n"
-    f"Historical focal uses gamma {criterion.gamma}, exp(-weighted CE) modulation, and batch-mean reduction.\n"
-    "No contrastive term. Live encoding bypasses frozen backbone embedding caches.\n"
-    "Non-reentrant gradient checkpointing and eager execution are used for live backbone training.\n"
-    f"Token budgets: train {TRAIN_MAX_TOKENS_PER_BATCH}, evaluation {EVAL_MAX_TOKENS_PER_BATCH}.\n"
-    "Smaller batches can change optimization/step counts, so this is not a perfectly isolated architecture comparison.\n"
+    f"# Run {run_dir.name}\n\nFrozen ProstT5 + adapters with residue max pooling.\n\n"
+    "Interaction ablation: shared bidirectional chain-level cross-attention between groups\n"
+    "(256-dimensional internal width, four heads, no positional encodings), followed by\n"
+    "group mean pooling and the existing symmetric pair-feature classifier.\n"
+    "Historical class-weighted focal loss only (gamma 2, exp(-weighted CE), batch mean).\n"
+    "Frozen backbone embedding caches are reusable; no LoRA or contrastive term.\n"
+    "Variable chain-set packing uses eager execution rather than torch.compile.\n"
   ),
 )
 print(f"Saved run -> {run_dir}")

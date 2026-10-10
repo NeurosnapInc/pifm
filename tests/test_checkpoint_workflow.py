@@ -1,7 +1,6 @@
-"""Exercise LoRA evaluation persistence with a tiny local T5 and no network access."""
+"""Exercise evaluation persistence with tiny cached embeddings and no network access."""
 
 import contextlib
-import copy
 import io
 import tempfile
 import unittest
@@ -10,12 +9,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 import torch
-from transformers import T5Config, T5EncoderModel
 
 import validate
 from run_utils import create_run_directory, save_run, save_json, split_checkpoint
 from migrate_checkpoints import migrate_checkpoint
-from model import MultiTaskGroupPairModel, LoRALinear
+from model import MultiTaskGroupPairModel, token_ids_key
 from summarize_runs import run_summary, summary_rows
 
 
@@ -28,11 +26,9 @@ class CheckpointWorkflowTests(unittest.TestCase):
     self.metrics_path = self.directory / "metrics.json"
     torch.manual_seed(1)
     self.meta = {"interaction": {"task_name": "interaction", "dtype": "bool", "num_classes": 2}}
-    self.base = T5EncoderModel(T5Config(
-      vocab_size=16, d_model=8, d_kv=4, d_ff=16, num_layers=1, num_heads=2, dropout_rate=0.0,
-    ))
-    self.model = MultiTaskGroupPairModel(copy.deepcopy(self.base), ["interaction"], {"interaction": 2}, 8, dropout=0.0)
+    self.model = MultiTaskGroupPairModel(None, ["interaction"], {"interaction": 2}, 8, adapter_dim=4, dropout=0.0)
     ids = torch.tensor([1, 2, 3])
+    self.embeddings = {token_ids_key(ids): torch.randn(3, 8)}
 
     def split(labels):
       n = len(labels)
@@ -52,15 +48,16 @@ class CheckpointWorkflowTests(unittest.TestCase):
       "splits": {"train": split([0, 1]), "validation": split([0, 1, 1]), "test": split([0, 0, 1, 1])},
     }
     self.checkpoint = {
-      "lora_state_dict": self.model.lora_state_dict(),
+      "adapter_state_dict": self.model.adapter.state_dict(),
       "residue_pool_state_dict": self.model.residue_pool.state_dict(),
       "group_pool_state_dict": self.model.group_pool.state_dict(),
+      "interaction_state_dict": self.model.interaction.state_dict(),
       "pair_mlp_state_dict": self.model.pair_mlp.state_dict(),
       "head_state_dicts": {"interaction": self.model.heads["interaction"].state_dict()},
       "config": {
-        "embed_dim": 8, "dropout": 0.0, "fine_tuning": "lora",
-        "lora_rank": LoRALinear.rank, "lora_alpha": LoRALinear.alpha,
-        "lora_dropout": LoRALinear.dropout_prob, "lora_targets": ["q", "v"],
+        "embed_dim": 8, "adapter_dim": 4, "dropout": 0.0,
+        "interaction_module": "bidirectional_chain_cross_attention",
+        "interaction_hidden_dim": 256, "interaction_heads": 4,
         "calibration": {"source_split": "validation", "classification": {
           "interaction": {"threshold": 0.4, "calibration_size": 3},
         }},
@@ -83,7 +80,7 @@ class CheckpointWorkflowTests(unittest.TestCase):
 
   def test_both_splits_are_persisted_without_changing_weights(self):
     original_bytes = self.path.read_bytes()
-    with patch.object(validate.T5EncoderModel, "from_pretrained", return_value=copy.deepcopy(self.base)):
+    with patch.object(validate, "_load_embedding_cache", return_value=self.embeddings):
       self.evaluate()
     self.assertEqual(self.path.read_bytes(), original_bytes)
     saved = torch.load(self.path, map_location="cpu")
@@ -99,7 +96,7 @@ class CheckpointWorkflowTests(unittest.TestCase):
       self.assertEqual(calibrated["threshold"], 0.4)
       self.assertEqual(calibrated["calibration_size"], 3)
       self.assertEqual(calibrated["calibration_split"], "validation")
-    for key in ("lora_state_dict", "residue_pool_state_dict", "group_pool_state_dict", "pair_mlp_state_dict"):
+    for key in ("adapter_state_dict", "residue_pool_state_dict", "group_pool_state_dict", "interaction_state_dict", "pair_mlp_state_dict"):
       for name, weight in self.checkpoint[key].items():
         self.assertTrue(torch.equal(weight, saved[key][name]))
     for name, weight in self.checkpoint["head_state_dicts"]["interaction"].items():
@@ -109,15 +106,15 @@ class CheckpointWorkflowTests(unittest.TestCase):
   def test_reused_model_and_single_split_preserve_other_results(self):
     self.checkpoint["evaluation"] = {"splits": {"test": {"sentinel": "keep"}}}
     self.save_updated_metadata()
-    with patch.object(validate.T5EncoderModel, "from_pretrained", side_effect=AssertionError("must reuse model")):
-      saved = self.evaluate(splits=("validation",), model=self.model)
+    with patch.object(validate, "_load_embedding_cache", side_effect=AssertionError("must reuse embeddings")):
+      saved = self.evaluate(splits=("validation",), model=self.model, embedding_cache=self.embeddings)
     self.assertEqual(saved["splits"]["test"], {"sentinel": "keep"})
 
   def test_second_split_failure_does_not_modify_checkpoint(self):
     original = self.metrics_path.read_bytes()
     with patch.object(validate, "_evaluate_split", side_effect=[{}, RuntimeError("test failed")]):
       with self.assertRaisesRegex(RuntimeError, "test failed"):
-        self.evaluate(model=self.model)
+        self.evaluate(model=self.model, embedding_cache=self.embeddings)
     self.assertEqual(self.metrics_path.read_bytes(), original)
 
   def test_atomic_save_failure_preserves_metrics(self):
@@ -149,7 +146,7 @@ class CheckpointWorkflowTests(unittest.TestCase):
       "splits": {"validation": {"historical_reports": archive}}, "historical_train_log": notes,
     }
     self.save_updated_metadata()
-    saved = self.evaluate(model=self.model)
+    saved = self.evaluate(model=self.model, embedding_cache=self.embeddings)
     self.assertEqual(saved["splits"]["validation"]["historical_reports"], archive)
     self.assertEqual(saved["historical_train_log"], notes)
 

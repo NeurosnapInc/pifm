@@ -30,7 +30,7 @@ MAX_LENGTH = 1024 * 2
 TOKENIZED_DATA_DIR = Path("data/tokenized")
 TRAIN_CACHE_PATH = TOKENIZED_DATA_DIR / "interaction_group_pair_prostt5_tokens.pt"
 BACKBONE_EMBEDDING_CACHE_PATH = TOKENIZED_DATA_DIR / "interaction_prostt5_backbone_embeddings.pt"
-USE_BACKBONE_EMBEDDING_CACHE = False  # LoRA changes the backbone outputs.
+USE_BACKBONE_EMBEDDING_CACHE = True
 EMBEDDING_CACHE_MAX_TOKENS_PER_BATCH = 32768
 
 ### Optimization
@@ -53,11 +53,11 @@ INTERACTION_POS_NEG_RATIO = 5.0
 SOURCE_BALANCED_SAMPLING = True
 
 ### Architecture
+ADAPTER_DIM = 64
 DROPOUT = 0.1
 PAIR_MLP_HIDDEN = 512
 CLASSIFICATION_HEAD_HIDDEN = 256
 
 ### Token-Capped Batching
-# Live backbone gradients require much more memory than cached-embedding runs.
-TRAIN_MAX_TOKENS_PER_BATCH = 8192
-EVAL_MAX_TOKENS_PER_BATCH = 16384
+TRAIN_MAX_TOKENS_PER_BATCH = 49152
+EVAL_MAX_TOKENS_PER_BATCH = 65536

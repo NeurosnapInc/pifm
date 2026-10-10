@@ -10,6 +10,7 @@ import torch.nn as nn
 from torch.utils.data import Dataset, Sampler
 
 from config import (
+  ADAPTER_DIM,
   CLASSIFICATION_HEAD_HIDDEN,
   DROPOUT,
   PAIR_MLP_HIDDEN,
@@ -129,46 +130,22 @@ class MultiTaskBatchSampler(Sampler):
     return math.ceil(self.num_samples / self.batch_size)
 
 
-class LoRALinear(nn.Module):
-  """Add a rank-8 update to a frozen attention projection.
-
-  A is randomly initialized and B starts at zero, preserving the pretrained
-  function initially. Updates use alpha/rank scaling and float32 trainable
-  parameters even when the frozen backbone weights use bfloat16.
-  """
-
-  rank = 8
-  alpha = 16
-  dropout_prob = 0.1
-
-  def __init__(self, projection):
+class Adapter(nn.Module):
+  def __init__(self, input_dim, adapter_dim=ADAPTER_DIM, dropout_prob=DROPOUT):
     super().__init__()
-    self.projection = projection
-    self.projection.requires_grad_(False)
-    self.lora_A = nn.Linear(projection.in_features, self.rank, bias=False, device=projection.weight.device)
-    self.lora_B = nn.Linear(self.rank, projection.out_features, bias=False, device=projection.weight.device)
-    nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))
-    nn.init.zeros_(self.lora_B.weight)
-    self.dropout = nn.Dropout(self.dropout_prob)
+    self.norm = nn.LayerNorm(input_dim)
+    self.down_project = nn.Linear(input_dim, adapter_dim)
+    self.activation = nn.GELU()
+    self.up_project = nn.Linear(adapter_dim, input_dim)
+    self.dropout = nn.Dropout(dropout_prob)
+    self.scale = nn.Parameter(torch.tensor(1e-3))
+    nn.init.normal_(self.down_project.weight, std=1e-3)
+    nn.init.normal_(self.up_project.weight, std=1e-3)
+    nn.init.zeros_(self.up_project.bias)
 
   def forward(self, x):
-    original = self.projection(x)
-    update = self.lora_B(self.lora_A(self.dropout(x).to(self.lora_A.weight.dtype)))
-    return original + (update * (self.alpha / self.rank)).to(original.dtype)
-
-
-class MaxPool(nn.Module):
-  """Take each feature's maximum over valid token embeddings.
-
-  Residue pooling uses the tokenizer's attention mask, including special tokens;
-  mask padding with negative infinity so it cannot dominate negative features.
-  Fully masked inputs return zeros.
-  """
-
-  def forward(self, x, mask):
-    valid = mask.bool().unsqueeze(-1)
-    pooled = x.masked_fill(~valid, float("-inf")).max(dim=1).values
-    return torch.where(valid.any(dim=1), pooled, torch.zeros_like(pooled))
+    x_norm = self.norm(x)
+    return self.scale * self.dropout(self.up_project(self.activation(self.down_project(x_norm))))
 
 
 class MeanPool(nn.Module):
@@ -183,6 +160,20 @@ class MeanPool(nn.Module):
     total = x.float().masked_fill(~valid, 0.0).sum(dim=1)
     count = valid.sum(dim=1).clamp_min(1)
     return (total / count).to(dtype=x.dtype)
+
+
+class MaxPool(nn.Module):
+  """Take each feature's maximum over valid token embeddings for a chain.
+
+  The tokenizer's existing attention mask defines valid positions, including
+  special tokens. Mask padding with negative infinity so it cannot dominate
+  negative features; an entirely masked chain returns zeros.
+  """
+
+  def forward(self, x, mask):
+    valid = mask.bool().unsqueeze(-1)
+    pooled = x.masked_fill(~valid, float("-inf")).max(dim=1).values
+    return torch.where(valid.any(dim=1), pooled, torch.zeros_like(pooled))
 
 
 class PairTaskHead(nn.Module):
@@ -200,6 +191,47 @@ class PairTaskHead(nn.Module):
     return self.net(x)
 
 
+class CrossGroupAttention(nn.Module):
+  """Contextualize each group's chains using the other group's chains.
+
+  Both directions share projection, four-head attention, and row-wise MLP
+  weights. No positional encodings are used: chain order is irrelevant and
+  swapping the groups swaps the outputs in evaluation mode. Attention uses
+  a fixed 256-dimensional internal width before returning to the chain width.
+  Masked keys cannot contribute and padded query outputs are zeroed.
+  """
+
+  def __init__(self, input_dim, dropout=DROPOUT):
+    super().__init__()
+    hidden_dim = 256
+    self.project = nn.Sequential(nn.LayerNorm(input_dim), nn.Linear(input_dim, hidden_dim))
+    self.attention = nn.MultiheadAttention(hidden_dim, 4, dropout=dropout, batch_first=True)
+    self.attention_norm = nn.LayerNorm(hidden_dim)
+    self.feedforward = nn.Sequential(
+      nn.Linear(hidden_dim, hidden_dim * 2),
+      nn.GELU(),
+      nn.Dropout(dropout),
+      nn.Linear(hidden_dim * 2, hidden_dim),
+    )
+    self.output_norm = nn.LayerNorm(hidden_dim)
+    self.output_project = nn.Linear(hidden_dim, input_dim)
+
+  def _attend(self, query, context, query_mask, context_mask):
+    attended, _ = self.attention(
+      query, context, context, key_padding_mask=~context_mask.bool(), need_weights=False,
+    )
+    hidden = self.attention_norm(query + attended)
+    hidden = self.output_norm(hidden + self.feedforward(hidden))
+    return self.output_project(hidden).masked_fill(~query_mask.bool().unsqueeze(-1), 0)
+
+  def forward(self, group1, mask1, group2, mask2):
+    if not mask1.bool().any(dim=1).all() or not mask2.bool().any(dim=1).all():
+      raise ValueError("Cross-attention requires at least one valid chain in each group.")
+    left = self.project(group1.masked_fill(~mask1.bool().unsqueeze(-1), 0))
+    right = self.project(group2.masked_fill(~mask2.bool().unsqueeze(-1), 0))
+    return self._attend(left, right, mask1, mask2), self._attend(right, left, mask2, mask1)
+
+
 class MultiTaskGroupPairModel(nn.Module):
   def __init__(
     self,
@@ -208,26 +240,20 @@ class MultiTaskGroupPairModel(nn.Module):
     task_output_dims,
     embed_dim,
     task_metas=None,
+    adapter_dim=ADAPTER_DIM,
     dropout=DROPOUT,
     classification_head_hidden=CLASSIFICATION_HEAD_HIDDEN,
   ):
     super().__init__()
-    if base_model is None:
-      raise ValueError("LoRA requires live ProstT5 token encoding; backbone embedding caches cannot be used.")
     self.base = base_model
-    self.base.requires_grad_(False)
-    attention_layers = [module for name, module in self.base.named_modules() if name.endswith(".SelfAttention")]
-    if not attention_layers:
-      raise ValueError("No T5 self-attention layers found for LoRA injection.")
-    for attention in attention_layers:
-      for name in ("q", "v"):
-        projection = getattr(attention, name)
-        if not isinstance(projection, nn.Linear):
-          raise ValueError(f"Expected an unmodified linear {name} projection for LoRA injection.")
-        setattr(attention, name, LoRALinear(projection))
+    if self.base is not None:
+      for param in self.base.parameters():
+        param.requires_grad = False
 
+    self.adapter = Adapter(embed_dim, adapter_dim, dropout_prob=dropout)
     self.residue_pool = MaxPool()
     self.group_pool = MeanPool()
+    self.interaction = CrossGroupAttention(embed_dim, dropout=dropout)
     self.pair_mlp = nn.Sequential(
       nn.LayerNorm(embed_dim * 3),
       nn.Linear(embed_dim * 3, PAIR_MLP_HIDDEN),
@@ -239,45 +265,29 @@ class MultiTaskGroupPairModel(nn.Module):
     for task_name in task_order:
       self.heads[task_name] = PairTaskHead(PAIR_MLP_HIDDEN, task_output_dims[task_name], classification_head_hidden, dropout=dropout)
 
-  def lora_state_dict(self):
-    """Return only LoRA matrices, excluding the frozen pretrained weights."""
-    return {
-      f"{name}.{key}": value
-      for name, module in self.base.named_modules() if isinstance(module, LoRALinear)
-      for key, value in (("lora_A.weight", module.lora_A.weight), ("lora_B.weight", module.lora_B.weight))
-    }
-
-  def load_lora_state_dict(self, state):
-    """Load all LoRA matrices strictly, rejecting missing or extra keys/shapes."""
-    expected = self.lora_state_dict()
-    if set(state) != set(expected):
-      raise ValueError("LoRA checkpoint keys do not match the current backbone projections.")
-    if any(state[key].shape != value.shape for key, value in expected.items()):
-      raise ValueError("LoRA checkpoint matrix shapes do not match the current architecture.")
-    with torch.no_grad():
-      for key, value in expected.items():
-        value.copy_(state[key])
-
   def encode_shared_tokens(self, input_ids, attention_mask, precomputed_embeddings=None):
-    if precomputed_embeddings is not None:
-      raise ValueError("Frozen backbone embeddings bypass LoRA; provide token IDs instead.")
-    out = self.base(input_ids=input_ids.long(), attention_mask=attention_mask.long())
-    return out.last_hidden_state.to(self.pair_mlp[0].weight.dtype)
+    if precomputed_embeddings is None:
+      if self.base is None:
+        raise ValueError("A base model is required when precomputed embeddings are not provided.")
+      out = self.base(input_ids=input_ids.long(), attention_mask=attention_mask.long())
+      token_repr = out.last_hidden_state
+    else:
+      token_repr = precomputed_embeddings.to(dtype=self.adapter.norm.weight.dtype)
+    return token_repr + self.adapter(token_repr)
 
-  def _pool_group(self, chain_embeddings, chain_to_sample, chain_to_group, batch_size: int, group_id: int):
-    group_embeddings = []
+  def _pack_group(self, chain_embeddings, chain_to_sample, chain_to_group, batch_size: int, group_id: int):
+    """Pack variable-size chain sets without assigning positions to chains."""
+    chain_sets = []
     for sample_idx in range(batch_size):
       mask = (chain_to_sample == sample_idx) & (chain_to_group == group_id)
       sample_chains = chain_embeddings[mask]
-      if sample_chains.shape[0] == 1:
-        group_embeddings.append(sample_chains[0])
-        continue
-      pooled = self.group_pool(
-        sample_chains.unsqueeze(0),
-        torch.ones((1, sample_chains.shape[0]), dtype=torch.long, device=sample_chains.device),
-      ).squeeze(0)
-      group_embeddings.append(pooled)
-    return torch.stack(group_embeddings, dim=0)
+      if sample_chains.shape[0] == 0:
+        raise ValueError(f"Sample {sample_idx} group {group_id} contains no chains.")
+      chain_sets.append(sample_chains)
+    padded = nn.utils.rnn.pad_sequence(chain_sets, batch_first=True)
+    lengths = torch.tensor([len(chains) for chains in chain_sets], device=padded.device)
+    valid = torch.arange(padded.shape[1], device=padded.device).unsqueeze(0) < lengths.unsqueeze(1)
+    return padded, valid
 
   def _pair_features(self, group1_embeddings, group2_embeddings):
     return torch.cat(
@@ -292,8 +302,11 @@ class MultiTaskGroupPairModel(nn.Module):
   def forward(self, input_ids, attention_mask, chain_to_sample, chain_to_group, batch_size, precomputed_embeddings=None):
     shared_tokens = self.encode_shared_tokens(input_ids, attention_mask, precomputed_embeddings=precomputed_embeddings)
     chain_embeddings = self.residue_pool(shared_tokens, attention_mask)
-    group1_embeddings = self._pool_group(chain_embeddings, chain_to_sample, chain_to_group, batch_size, group_id=0)
-    group2_embeddings = self._pool_group(chain_embeddings, chain_to_sample, chain_to_group, batch_size, group_id=1)
+    group1, mask1 = self._pack_group(chain_embeddings, chain_to_sample, chain_to_group, batch_size, group_id=0)
+    group2, mask2 = self._pack_group(chain_embeddings, chain_to_sample, chain_to_group, batch_size, group_id=1)
+    contextual1, contextual2 = self.interaction(group1, mask1, group2, mask2)
+    group1_embeddings = self.group_pool(contextual1, mask1)
+    group2_embeddings = self.group_pool(contextual2, mask2)
     pair_hidden = self.pair_mlp(self._pair_features(group1_embeddings, group2_embeddings))
     return {
       task_name: head(pair_hidden)
