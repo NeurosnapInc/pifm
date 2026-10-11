@@ -131,16 +131,36 @@ def split_checkpoint(checkpoint, notes=""):
   return weights, config, metrics, notes
 
 
-def save_run(checkpoint, directory, notes=""):
-  """Write the four artifacts for a new run, refusing to replace existing artifacts."""
+def save_run(checkpoint, directory, notes="", overwrite=False):
+  """Create run artifacts or explicitly update the current training run's best.
+
+  Existing artifacts are protected by default. Updates require a complete run
+  with matching timestamp and seed, preserve its notes, and replace metrics
+  with those belonging to the new weights so old evaluations cannot linger.
+  Each artifact is written atomically; the set of files is not a transaction.
+  """
   import torch
 
   directory = Path(directory)
   directory.mkdir(parents=True, exist_ok=True)
-  if any((directory / name).exists() for name in ("checkpoint.pt", "config.json", "metrics.json", "notes.md")):
-    raise FileExistsError(f"Run artifacts already exist: {directory}")
   weights, config, metrics, notes = split_checkpoint(checkpoint, notes)
+  artifacts = ("checkpoint.pt", "config.json", "metrics.json", "notes.md")
+  exists = any((directory / name).exists() for name in artifacts)
+  if exists:
+    if not overwrite:
+      raise FileExistsError(f"Run artifacts already exist: {directory}")
+    if not all((directory / name).is_file() for name in artifacts):
+      raise FileExistsError(f"Cannot update incomplete run artifacts: {directory}")
+    previous_config = json.loads((directory / "config.json").read_text())
+    if not config.get("run_timestamp") or any(
+      previous_config.get(key) != config.get(key) for key in ("run_timestamp", "training_seed")
+    ):
+      raise FileExistsError(f"Refusing to overwrite artifacts belonging to a different run: {directory}")
+    # Split reports describe the previous weights, not this new best checkpoint.
+    metrics["splits"] = {}
+    notes = (directory / "notes.md").read_text()
   _atomic_write(directory / "checkpoint.pt", lambda handle: torch.save(weights, handle), binary=True)
   save_json(config, directory / "config.json")
   save_json(metrics, directory / "metrics.json")
-  _atomic_write(directory / "notes.md", lambda handle: handle.write(notes.rstrip() + "\n"))
+  if not exists:
+    _atomic_write(directory / "notes.md", lambda handle: handle.write(notes.rstrip() + "\n"))

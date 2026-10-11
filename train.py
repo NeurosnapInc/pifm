@@ -420,6 +420,7 @@ def _save_current_best(model_ref, best_state, calibration, run_dir, saved_at):
       },
     },
     run_dir,
+    overwrite=True,
     notes=(
       f"# Run {run_dir.name}\n\nFrozen ProstT5 + adapters with residue max pooling.\n\n"
       "Interaction ablation: shared bidirectional chain-level cross-attention between groups\n"

@@ -56,6 +56,7 @@ class CheckpointWorkflowTests(unittest.TestCase):
       "head_state_dicts": {"interaction": self.model.heads["interaction"].state_dict()},
       "config": {
         "embed_dim": 8, "adapter_dim": 4, "dropout": 0.0,
+        "run_timestamp": "2026-10-11T18:21:00+00:00", "training_seed": 1,
         "interaction_module": "bidirectional_chain_cross_attention",
         "interaction_hidden_dim": 256, "interaction_heads": 4,
         "calibration": {"source_split": "validation", "classification": {
@@ -152,6 +153,34 @@ class CheckpointWorkflowTests(unittest.TestCase):
         save_json({"new": "metrics"}, self.metrics_path)
     self.assertEqual(self.metrics_path.read_bytes(), original)
     self.assertFalse(list(self.directory.glob(".*.tmp")))
+
+  def test_consecutive_best_saves_preserve_notes_and_invalidate_old_reports(self):
+    from run_utils import load_run
+
+    notes = "Custom experiment notes without a trailing newline"
+    (self.directory / "notes.md").write_text(notes)
+    for score in (0.6, 0.7, 0.8):
+      self.checkpoint["config"]["best_selection_metric"] = score
+      self.checkpoint["evaluation"] = {"splits": {"test": {"stale": True}}}
+      with torch.no_grad():
+        self.model.adapter.scale.fill_(score)
+      save_run(self.checkpoint, self.directory, notes="must not replace notes", overwrite=True)
+      _, saved = load_run(self.directory)
+      self.assertEqual(saved["evaluation"]["training"]["best_selection_metric"], score)
+      self.assertEqual(saved["evaluation"]["splits"], {})
+      torch.testing.assert_close(saved["adapter_state_dict"]["scale"], torch.tensor(score))
+      self.assertEqual((self.directory / "notes.md").read_text(), notes)
+    # The final save of the restored best model is allowed too.
+    save_run(self.checkpoint, self.directory, overwrite=True)
+
+  def test_run_overwrite_is_explicit_and_checks_run_identity(self):
+    original = self.path.read_bytes()
+    with self.assertRaises(FileExistsError):
+      save_run(self.checkpoint, self.directory)
+    self.checkpoint["config"]["run_timestamp"] = "2026-10-11T19:00:00+00:00"
+    with self.assertRaisesRegex(FileExistsError, "different run"):
+      save_run(self.checkpoint, self.directory, overwrite=True)
+    self.assertEqual(self.path.read_bytes(), original)
 
   def test_run_names_include_minutes_and_avoid_collisions(self):
     timestamp = datetime(2026, 10, 6, 14, 30, tzinfo=timezone.utc)
