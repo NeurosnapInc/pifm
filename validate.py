@@ -32,7 +32,7 @@ from model import (
   MultiTaskBatchSampler,
   MultiTaskGroupPairDataset,
   MultiTaskGroupPairModel,
-  SymmetricBilinearInteraction,
+  ChainTransformerInteraction,
   collate_multitask_batch,
   load_backbone_embedding_cache,
   output_dim_from_meta,
@@ -173,11 +173,16 @@ def evaluate_run(run_path, cache_path=DEFAULT_CACHE_PATH, splits=("validation", 
 
   print("Loading checkpoint and tokenized cache")
   run_dir, checkpoint = load_run(run_path)
-  if checkpoint["config"].get("interaction_module") != "symmetric_projected_bilinear" or "interaction_state_dict" not in checkpoint:
-    raise ValueError("Current architecture uses symmetric bilinear interactions. Evaluate older runs using their recorded git_commit.")
-  if (checkpoint["config"].get("interaction_projection_dim") != SymmetricBilinearInteraction.projection_dim
-      or checkpoint["config"].get("interaction_feature_dim") != SymmetricBilinearInteraction.feature_dim):
-    raise ValueError("Run bilinear settings do not match the current architecture; use its recorded git_commit.")
+  if checkpoint["config"].get("interaction_module") != "chain_transformer" or "interaction_state_dict" not in checkpoint:
+    raise ValueError("Current architecture uses a chain Transformer. Evaluate older runs using their recorded git_commit.")
+  expected = {
+    "interaction_hidden_dim": ChainTransformerInteraction.hidden_dim,
+    "interaction_heads": ChainTransformerInteraction.heads,
+    "interaction_layers": ChainTransformerInteraction.layers,
+    "interaction_group_encoding": "same_cross_attention_bias",
+  }
+  if any(checkpoint["config"].get(key) != value for key, value in expected.items()):
+    raise ValueError("Run Transformer settings do not match the current architecture; use its recorded git_commit.")
   if payload is None:
     payload = torch.load(cache_path, map_location="cpu")
 

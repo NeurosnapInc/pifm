@@ -338,7 +338,7 @@ Test:
 - [x] Pairwise interaction features
 - [x] Cross-attention between groups
 - [x] Bilinear interaction layers
-- [ ] Small Transformer operating on chain embeddings
+- [x] Small Transformer operating on chain embeddings
 
 ### Data Augmentation
 - [ ] Sequence masking

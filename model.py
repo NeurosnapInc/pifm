@@ -191,38 +191,71 @@ class PairTaskHead(nn.Module):
     return self.net(x)
 
 
-class SymmetricBilinearInteraction(nn.Module):
-  """Learn cross-feature interactions between mean-pooled protein groups.
+class ChainInteractionBlock(nn.Module):
+  """Self-attention with a swap-invariant same-group/cross-group bias."""
 
-  A shared 64-dimensional projection bounds the bilinear parameter count.
-  Each of 256 outputs learns a full matrix of latent cross-feature products,
-  rather than only matching-coordinate multiplication. Average both group
-  orders for symmetry, normalize the features, and project to the original
-  embedding width. Float32 arithmetic protects the product/accumulation path
-  under mixed precision. No group-position-specific parameters are used.
+  def __init__(self, hidden_dim, heads, dropout):
+    super().__init__()
+    self.heads = heads
+    self.relation_bias = nn.Parameter(torch.zeros(heads, 2))
+    self.attention_norm = nn.LayerNorm(hidden_dim)
+    self.attention = nn.MultiheadAttention(hidden_dim, heads, dropout=dropout, batch_first=True)
+    self.feedforward_norm = nn.LayerNorm(hidden_dim)
+    self.feedforward = nn.Sequential(
+      nn.Linear(hidden_dim, hidden_dim * 2),
+      nn.GELU(),
+      nn.Dropout(dropout),
+      nn.Linear(hidden_dim * 2, hidden_dim),
+      nn.Dropout(dropout),
+    )
+
+  def forward(self, x, group_ids, valid):
+    cross_group = (group_ids.unsqueeze(2) != group_ids.unsqueeze(1)).long()
+    bias = self.relation_bias[:, cross_group].permute(1, 0, 2, 3)
+    bias = bias.masked_fill(~valid[:, None, None, :], float("-inf"))
+    attention_mask = bias.reshape(x.shape[0] * self.heads, x.shape[1], x.shape[1])
+    normalized = self.attention_norm(x)
+    # Small chain sets use explicit math attention, not the reduced-precision SDPA path.
+    attended, _ = self.attention(
+      normalized, normalized, normalized, attn_mask=attention_mask, need_weights=True,
+    )
+    hidden = x + attended
+    hidden = hidden + self.feedforward(self.feedforward_norm(hidden))
+    return hidden.masked_fill(~valid.unsqueeze(-1), 0)
+
+
+class ChainTransformerInteraction(nn.Module):
+  """Contextualize all chains in a complex with a small shared Transformer.
+
+  Two pre-normalized blocks use four heads and a 256-dimensional internal
+  width. Same-group/cross-group attention biases retain the partition without
+  naming either group; no positional embeddings are used. Thus chain
+  permutations permute outputs, while exchanging groups leaves contextual
+  outputs unchanged in evaluation mode. Padding is excluded from attention
+  and zeroed at the output. Float32 math is retained under outer autocast.
   """
 
-  projection_dim = 64
-  feature_dim = 256
+  hidden_dim = 256
+  heads = 4
+  layers = 2
 
-  def __init__(self, input_dim):
+  def __init__(self, input_dim, dropout=DROPOUT):
     super().__init__()
-    self.project = nn.Sequential(
-      nn.LayerNorm(input_dim),
-      nn.Linear(input_dim, self.projection_dim, bias=False),
-    )
-    self.bilinear = nn.Bilinear(self.projection_dim, self.projection_dim, self.feature_dim, bias=False)
-    self.output = nn.Sequential(
-      nn.LayerNorm(self.feature_dim),
-      nn.Linear(self.feature_dim, input_dim),
-    )
+    self.project = nn.Sequential(nn.LayerNorm(input_dim), nn.Linear(input_dim, self.hidden_dim))
+    self.blocks = nn.ModuleList([
+      ChainInteractionBlock(self.hidden_dim, self.heads, dropout) for _ in range(self.layers)
+    ])
+    self.output = nn.Sequential(nn.LayerNorm(self.hidden_dim), nn.Linear(self.hidden_dim, input_dim))
 
-  def forward(self, group1, group2):
-    with torch.autocast(device_type=group1.device.type, enabled=False):
-      left = self.project(group1.float())
-      right = self.project(group2.float())
-      symmetric = 0.5 * (self.bilinear(left, right) + self.bilinear(right, left))
-      return self.output(symmetric)
+  def forward(self, chains, group_ids, valid):
+    valid = valid.bool()
+    if not valid.any(dim=1).all():
+      raise ValueError("Chain Transformer requires at least one chain per sample.")
+    with torch.autocast(device_type=chains.device.type, enabled=False):
+      hidden = self.project(chains.float().masked_fill(~valid.unsqueeze(-1), 0))
+      for block in self.blocks:
+        hidden = block(hidden, group_ids, valid)
+      return self.output(hidden).masked_fill(~valid.unsqueeze(-1), 0)
 
 
 class MultiTaskGroupPairModel(nn.Module):
@@ -246,7 +279,7 @@ class MultiTaskGroupPairModel(nn.Module):
     self.adapter = Adapter(embed_dim, adapter_dim, dropout_prob=dropout)
     self.residue_pool = MaxPool()
     self.group_pool = MeanPool()
-    self.interaction = SymmetricBilinearInteraction(embed_dim)
+    self.interaction = ChainTransformerInteraction(embed_dim, dropout=dropout)
     self.pair_mlp = nn.Sequential(
       nn.LayerNorm(embed_dim * 3),
       nn.Linear(embed_dim * 3, PAIR_MLP_HIDDEN),
@@ -270,8 +303,22 @@ class MultiTaskGroupPairModel(nn.Module):
       raise FloatingPointError("Non-finite backbone embeddings detected before the adapter; check the embedding cache/input.")
     return token_repr + self.adapter(token_repr)
 
+  def _contextualize_chains(self, chains, chain_to_sample, chain_to_group, batch_size):
+    """Pack sample-local sets and restore their original chain ordering afterward."""
+    indices = [(chain_to_sample == idx).nonzero(as_tuple=True)[0] for idx in range(batch_size)]
+    if any(len(index) == 0 for index in indices):
+      raise ValueError("Every sample must contain chains.")
+    padded = nn.utils.rnn.pad_sequence([chains[index] for index in indices], batch_first=True)
+    groups = nn.utils.rnn.pad_sequence(
+      [chain_to_group[index] for index in indices], batch_first=True, padding_value=-1,
+    )
+    lengths = torch.tensor([len(index) for index in indices], device=chains.device)
+    valid = torch.arange(padded.shape[1], device=chains.device).unsqueeze(0) < lengths.unsqueeze(1)
+    contextual = self.interaction(padded, groups, valid)
+    return contextual.new_zeros(chains.shape).index_copy(0, torch.cat(indices), contextual[valid])
+
   def _pool_group(self, chain_embeddings, chain_to_sample, chain_to_group, batch_size: int, group_id: int):
-    """Mean-pool each chain set before the bilinear interaction stage."""
+    """Mean-pool contextualized chains within each group."""
     group_embeddings = []
     for sample_idx in range(batch_size):
       mask = (chain_to_sample == sample_idx) & (chain_to_group == group_id)
@@ -290,7 +337,7 @@ class MultiTaskGroupPairModel(nn.Module):
       [
         group1_embeddings + group2_embeddings,
         torch.abs(group1_embeddings - group2_embeddings),
-        self.interaction(group1_embeddings, group2_embeddings),
+        group1_embeddings * group2_embeddings,
       ],
       dim=-1,
     )
@@ -298,6 +345,7 @@ class MultiTaskGroupPairModel(nn.Module):
   def forward(self, input_ids, attention_mask, chain_to_sample, chain_to_group, batch_size, precomputed_embeddings=None):
     shared_tokens = self.encode_shared_tokens(input_ids, attention_mask, precomputed_embeddings=precomputed_embeddings)
     chain_embeddings = self.residue_pool(shared_tokens, attention_mask)
+    chain_embeddings = self._contextualize_chains(chain_embeddings, chain_to_sample, chain_to_group, batch_size)
     group1_embeddings = self._pool_group(chain_embeddings, chain_to_sample, chain_to_group, batch_size, group_id=0)
     group2_embeddings = self._pool_group(chain_embeddings, chain_to_sample, chain_to_group, batch_size, group_id=1)
     pair_hidden = self.pair_mlp(self._pair_features(group1_embeddings, group2_embeddings))

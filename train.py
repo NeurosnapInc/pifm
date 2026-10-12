@@ -49,7 +49,7 @@ from model import (
   MultiTaskBatchSampler,
   MultiTaskGroupPairDataset,
   MultiTaskGroupPairModel,
-  SymmetricBilinearInteraction,
+  ChainTransformerInteraction,
   collate_multitask_batch,
   load_backbone_embedding_cache,
   output_dim_from_meta,
@@ -391,10 +391,12 @@ def _save_current_best(model_ref, best_state, calibration, run_dir, saved_at):
         "embed_dim": embed_dim,
         "adapter_dim": ADAPTER_DIM,
         "fine_tuning": "adapters",
-        "interaction_module": "symmetric_projected_bilinear",
-        "interaction_projection_dim": SymmetricBilinearInteraction.projection_dim,
-        "interaction_feature_dim": SymmetricBilinearInteraction.feature_dim,
-        "interaction_precision": "float32_bilinear",
+        "interaction_module": "chain_transformer",
+        "interaction_hidden_dim": ChainTransformerInteraction.hidden_dim,
+        "interaction_heads": ChainTransformerInteraction.heads,
+        "interaction_layers": ChainTransformerInteraction.layers,
+        "interaction_group_encoding": "same_cross_attention_bias",
+        "interaction_precision": "float32_math_attention",
         "dropout": DROPOUT,
         "classification_head_hidden": CLASSIFICATION_HEAD_HIDDEN,
         "model_name": MODEL_NAME,
@@ -424,13 +426,14 @@ def _save_current_best(model_ref, best_state, calibration, run_dir, saved_at):
     overwrite=True,
     notes=(
       f"# Run {run_dir.name}\n\nFrozen ProstT5 + adapters with residue max pooling.\n\n"
-      "Interaction ablation: mean-pool chains within each group, then use a shared\n"
-      "64-dimensional projection and 256 learned bilinear features, averaged over\n"
-      "both group orders. Normalized bilinear features replace the fixed elementwise\n"
-      "product; group sum, absolute difference, pair MLP, and classifier remain.\n"
+      "Interaction ablation: a small Transformer over both groups' chain embeddings\n"
+      "(two pre-normalized blocks, four heads, 256-dimensional width). Learned\n"
+      "same-group/cross-group attention biases encode the partition without positional\n"
+      "or group-ID embeddings. Mean-pool contextualized chains per group, then use\n"
+      "the original symmetric sum/absolute-difference/product classifier features.\n"
       "Historical class-weighted focal loss only (gamma 2, exp(-weighted CE), batch mean).\n"
       "Frozen backbone embedding caches are reusable; no LoRA or contrastive term.\n"
-      "Eager execution is retained; bilinear arithmetic uses float32 under autocast.\n"
+      "Eager execution and float32 math attention are retained under autocast.\n"
       "Non-finite inputs/logits/loss/gradients abort training.\n"
       "Each validation-AUROC improvement is checkpointed immediately.\n"
     ),

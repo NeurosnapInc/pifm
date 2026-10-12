@@ -57,8 +57,9 @@ class CheckpointWorkflowTests(unittest.TestCase):
       "config": {
         "embed_dim": 8, "adapter_dim": 4, "dropout": 0.0,
         "run_timestamp": "2026-10-11T18:21:00+00:00", "training_seed": 1,
-        "interaction_module": "symmetric_projected_bilinear",
-        "interaction_projection_dim": 64, "interaction_feature_dim": 256,
+        "interaction_module": "chain_transformer",
+        "interaction_hidden_dim": 256, "interaction_heads": 4, "interaction_layers": 2,
+        "interaction_group_encoding": "same_cross_attention_bias",
         "calibration": {"source_split": "validation", "classification": {
           "interaction": {"threshold": 0.4, "calibration_size": 3},
         }},
@@ -126,12 +127,13 @@ class CheckpointWorkflowTests(unittest.TestCase):
         self.evaluate(model=self.model, embedding_cache=self.embeddings, splits=("validation",))
     self.assertEqual(self.metrics_path.read_bytes(), original)
 
-  def test_bilinear_stays_float32_and_backpropagates_under_autocast(self):
-    left = torch.randn(2, 8, requires_grad=True)
-    right = torch.randn(2, 8, requires_grad=True)
+  def test_chain_transformer_stays_float32_and_backpropagates_under_autocast(self):
+    chains = torch.randn(2, 3, 8, requires_grad=True)
+    groups = torch.tensor([[0, 1, -1], [0, 0, 1]])
+    valid = groups >= 0
     with torch.autocast("cpu", dtype=torch.bfloat16):
-      a = self.model.interaction(left, right)
-      b = self.model.interaction(right, left)
+      a = self.model.interaction(chains, groups, valid)
+      b = self.model.interaction(chains, torch.where(valid, 1 - groups, groups), valid)
       loss = a.square().mean()
     torch.testing.assert_close(a, b)
     self.assertEqual(a.dtype, torch.float32)
@@ -140,8 +142,7 @@ class CheckpointWorkflowTests(unittest.TestCase):
     for parameter in self.model.interaction.parameters():
       self.assertIsNotNone(parameter.grad)
       self.assertTrue(torch.isfinite(parameter.grad).all())
-    self.assertTrue(torch.isfinite(left.grad).all())
-    self.assertTrue(torch.isfinite(right.grad).all())
+    self.assertTrue(torch.isfinite(chains.grad).all())
     ids = torch.tensor([[1, 2, 3]])
     with self.assertRaisesRegex(FloatingPointError, "Non-finite backbone embeddings"):
       self.model.encode_shared_tokens(ids, torch.ones_like(ids), torch.full((1, 3, 8), float("nan")))
