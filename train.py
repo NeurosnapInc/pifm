@@ -49,6 +49,7 @@ from model import (
   MultiTaskBatchSampler,
   MultiTaskGroupPairDataset,
   MultiTaskGroupPairModel,
+  SymmetricBilinearInteraction,
   collate_multitask_batch,
   load_backbone_embedding_cache,
   output_dim_from_meta,
@@ -57,7 +58,7 @@ from model import (
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 AMP_ENABLED = DEVICE.type == "cuda"
-COMPILE_MODEL = False  # Variable chain-set packing stays eager for this ablation.
+COMPILE_MODEL = False  # Retain eager execution for the interaction ablations.
 PIN_MEMORY = DEVICE.type == "cuda"
 USE_FUSED_ADAMW = DEVICE.type == "cuda"
 TASK_NAME = "interaction"
@@ -390,10 +391,10 @@ def _save_current_best(model_ref, best_state, calibration, run_dir, saved_at):
         "embed_dim": embed_dim,
         "adapter_dim": ADAPTER_DIM,
         "fine_tuning": "adapters",
-        "interaction_module": "bidirectional_chain_cross_attention",
-        "interaction_hidden_dim": 256,
-        "interaction_heads": 4,
-        "interaction_precision": "float32_math_attention",
+        "interaction_module": "symmetric_projected_bilinear",
+        "interaction_projection_dim": SymmetricBilinearInteraction.projection_dim,
+        "interaction_feature_dim": SymmetricBilinearInteraction.feature_dim,
+        "interaction_precision": "float32_bilinear",
         "dropout": DROPOUT,
         "classification_head_hidden": CLASSIFICATION_HEAD_HIDDEN,
         "model_name": MODEL_NAME,
@@ -423,13 +424,14 @@ def _save_current_best(model_ref, best_state, calibration, run_dir, saved_at):
     overwrite=True,
     notes=(
       f"# Run {run_dir.name}\n\nFrozen ProstT5 + adapters with residue max pooling.\n\n"
-      "Interaction ablation: shared bidirectional chain-level cross-attention between groups\n"
-      "(256-dimensional internal width, four heads, no positional encodings), followed by\n"
-      "group mean pooling and the existing symmetric pair-feature classifier.\n"
+      "Interaction ablation: mean-pool chains within each group, then use a shared\n"
+      "64-dimensional projection and 256 learned bilinear features, averaged over\n"
+      "both group orders. Normalized bilinear features replace the fixed elementwise\n"
+      "product; group sum, absolute difference, pair MLP, and classifier remain.\n"
       "Historical class-weighted focal loss only (gamma 2, exp(-weighted CE), batch mean).\n"
       "Frozen backbone embedding caches are reusable; no LoRA or contrastive term.\n"
-      "Variable chain-set packing uses eager execution rather than torch.compile.\n"
-      "Cross-attention uses float32 math attention; non-finite inputs/logits/loss/gradients abort training.\n"
+      "Eager execution is retained; bilinear arithmetic uses float32 under autocast.\n"
+      "Non-finite inputs/logits/loss/gradients abort training.\n"
       "Each validation-AUROC improvement is checkpointed immediately.\n"
     ),
   )

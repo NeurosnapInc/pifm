@@ -191,49 +191,38 @@ class PairTaskHead(nn.Module):
     return self.net(x)
 
 
-class CrossGroupAttention(nn.Module):
-  """Contextualize each group's chains using the other group's chains.
+class SymmetricBilinearInteraction(nn.Module):
+  """Learn cross-feature interactions between mean-pooled protein groups.
 
-  Both directions share projection, four-head attention, and row-wise MLP
-  weights. No positional encodings are used: chain order is irrelevant and
-  swapping the groups swaps the outputs in evaluation mode. Attention uses
-  a fixed 256-dimensional internal width before returning to the chain width.
-  Masked keys cannot contribute and padded query outputs are zeroed. This
-  small chain-level block stays in float32 even when token processing uses
-  autocast, avoiding reduced-precision attention and pair-product arithmetic.
+  A shared 64-dimensional projection bounds the bilinear parameter count.
+  Each of 256 outputs learns a full matrix of latent cross-feature products,
+  rather than only matching-coordinate multiplication. Average both group
+  orders for symmetry, normalize the features, and project to the original
+  embedding width. Float32 arithmetic protects the product/accumulation path
+  under mixed precision. No group-position-specific parameters are used.
   """
 
-  def __init__(self, input_dim, dropout=DROPOUT):
+  projection_dim = 64
+  feature_dim = 256
+
+  def __init__(self, input_dim):
     super().__init__()
-    hidden_dim = 256
-    self.project = nn.Sequential(nn.LayerNorm(input_dim), nn.Linear(input_dim, hidden_dim))
-    self.attention = nn.MultiheadAttention(hidden_dim, 4, dropout=dropout, batch_first=True)
-    self.attention_norm = nn.LayerNorm(hidden_dim)
-    self.feedforward = nn.Sequential(
-      nn.Linear(hidden_dim, hidden_dim * 2),
-      nn.GELU(),
-      nn.Dropout(dropout),
-      nn.Linear(hidden_dim * 2, hidden_dim),
+    self.project = nn.Sequential(
+      nn.LayerNorm(input_dim),
+      nn.Linear(input_dim, self.projection_dim, bias=False),
     )
-    self.output_norm = nn.LayerNorm(hidden_dim)
-    self.output_project = nn.Linear(hidden_dim, input_dim)
-
-  def _attend(self, query, context, query_mask, context_mask):
-    attended, _ = self.attention(
-      query, context, context, key_padding_mask=~context_mask.bool(), need_weights=True,
+    self.bilinear = nn.Bilinear(self.projection_dim, self.projection_dim, self.feature_dim, bias=False)
+    self.output = nn.Sequential(
+      nn.LayerNorm(self.feature_dim),
+      nn.Linear(self.feature_dim, input_dim),
     )
-    hidden = self.attention_norm(query + attended)
-    hidden = self.output_norm(hidden + self.feedforward(hidden))
-    return self.output_project(hidden).masked_fill(~query_mask.bool().unsqueeze(-1), 0)
 
-  def forward(self, group1, mask1, group2, mask2):
-    if not mask1.bool().any(dim=1).all() or not mask2.bool().any(dim=1).all():
-      raise ValueError("Cross-attention requires at least one valid chain in each group.")
-    # Chain sets are small; explicit float32 attention avoids the autocast/SDPA path.
+  def forward(self, group1, group2):
     with torch.autocast(device_type=group1.device.type, enabled=False):
-      left = self.project(group1.float().masked_fill(~mask1.bool().unsqueeze(-1), 0))
-      right = self.project(group2.float().masked_fill(~mask2.bool().unsqueeze(-1), 0))
-      return self._attend(left, right, mask1, mask2), self._attend(right, left, mask2, mask1)
+      left = self.project(group1.float())
+      right = self.project(group2.float())
+      symmetric = 0.5 * (self.bilinear(left, right) + self.bilinear(right, left))
+      return self.output(symmetric)
 
 
 class MultiTaskGroupPairModel(nn.Module):
@@ -257,7 +246,7 @@ class MultiTaskGroupPairModel(nn.Module):
     self.adapter = Adapter(embed_dim, adapter_dim, dropout_prob=dropout)
     self.residue_pool = MaxPool()
     self.group_pool = MeanPool()
-    self.interaction = CrossGroupAttention(embed_dim, dropout=dropout)
+    self.interaction = SymmetricBilinearInteraction(embed_dim)
     self.pair_mlp = nn.Sequential(
       nn.LayerNorm(embed_dim * 3),
       nn.Linear(embed_dim * 3, PAIR_MLP_HIDDEN),
@@ -281,26 +270,27 @@ class MultiTaskGroupPairModel(nn.Module):
       raise FloatingPointError("Non-finite backbone embeddings detected before the adapter; check the embedding cache/input.")
     return token_repr + self.adapter(token_repr)
 
-  def _pack_group(self, chain_embeddings, chain_to_sample, chain_to_group, batch_size: int, group_id: int):
-    """Pack variable-size chain sets without assigning positions to chains."""
-    chain_sets = []
+  def _pool_group(self, chain_embeddings, chain_to_sample, chain_to_group, batch_size: int, group_id: int):
+    """Mean-pool each chain set before the bilinear interaction stage."""
+    group_embeddings = []
     for sample_idx in range(batch_size):
       mask = (chain_to_sample == sample_idx) & (chain_to_group == group_id)
       sample_chains = chain_embeddings[mask]
       if sample_chains.shape[0] == 0:
         raise ValueError(f"Sample {sample_idx} group {group_id} contains no chains.")
-      chain_sets.append(sample_chains)
-    padded = nn.utils.rnn.pad_sequence(chain_sets, batch_first=True)
-    lengths = torch.tensor([len(chains) for chains in chain_sets], device=padded.device)
-    valid = torch.arange(padded.shape[1], device=padded.device).unsqueeze(0) < lengths.unsqueeze(1)
-    return padded, valid
+      if sample_chains.shape[0] == 1:
+        group_embeddings.append(sample_chains[0])
+        continue
+      valid = torch.ones((1, sample_chains.shape[0]), device=sample_chains.device, dtype=torch.bool)
+      group_embeddings.append(self.group_pool(sample_chains.unsqueeze(0), valid).squeeze(0))
+    return torch.stack(group_embeddings)
 
   def _pair_features(self, group1_embeddings, group2_embeddings):
     return torch.cat(
       [
         group1_embeddings + group2_embeddings,
         torch.abs(group1_embeddings - group2_embeddings),
-        group1_embeddings * group2_embeddings,
+        self.interaction(group1_embeddings, group2_embeddings),
       ],
       dim=-1,
     )
@@ -308,11 +298,8 @@ class MultiTaskGroupPairModel(nn.Module):
   def forward(self, input_ids, attention_mask, chain_to_sample, chain_to_group, batch_size, precomputed_embeddings=None):
     shared_tokens = self.encode_shared_tokens(input_ids, attention_mask, precomputed_embeddings=precomputed_embeddings)
     chain_embeddings = self.residue_pool(shared_tokens, attention_mask)
-    group1, mask1 = self._pack_group(chain_embeddings, chain_to_sample, chain_to_group, batch_size, group_id=0)
-    group2, mask2 = self._pack_group(chain_embeddings, chain_to_sample, chain_to_group, batch_size, group_id=1)
-    contextual1, contextual2 = self.interaction(group1, mask1, group2, mask2)
-    group1_embeddings = self.group_pool(contextual1, mask1)
-    group2_embeddings = self.group_pool(contextual2, mask2)
+    group1_embeddings = self._pool_group(chain_embeddings, chain_to_sample, chain_to_group, batch_size, group_id=0)
+    group2_embeddings = self._pool_group(chain_embeddings, chain_to_sample, chain_to_group, batch_size, group_id=1)
     pair_hidden = self.pair_mlp(self._pair_features(group1_embeddings, group2_embeddings))
     return {
       task_name: head(pair_hidden)

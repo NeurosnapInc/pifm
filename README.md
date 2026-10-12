@@ -337,7 +337,7 @@ Evaluate permutation-invariant approaches:
 Test:
 - [x] Pairwise interaction features
 - [x] Cross-attention between groups
-- [ ] Bilinear interaction layers
+- [x] Bilinear interaction layers
 - [ ] Small Transformer operating on chain embeddings
 
 ### Data Augmentation

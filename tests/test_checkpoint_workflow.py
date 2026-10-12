@@ -57,8 +57,8 @@ class CheckpointWorkflowTests(unittest.TestCase):
       "config": {
         "embed_dim": 8, "adapter_dim": 4, "dropout": 0.0,
         "run_timestamp": "2026-10-11T18:21:00+00:00", "training_seed": 1,
-        "interaction_module": "bidirectional_chain_cross_attention",
-        "interaction_hidden_dim": 256, "interaction_heads": 4,
+        "interaction_module": "symmetric_projected_bilinear",
+        "interaction_projection_dim": 64, "interaction_feature_dim": 256,
         "calibration": {"source_split": "validation", "classification": {
           "interaction": {"threshold": 0.4, "calibration_size": 3},
         }},
@@ -126,14 +126,14 @@ class CheckpointWorkflowTests(unittest.TestCase):
         self.evaluate(model=self.model, embedding_cache=self.embeddings, splits=("validation",))
     self.assertEqual(self.metrics_path.read_bytes(), original)
 
-  def test_cross_attention_stays_float32_and_backpropagates_under_autocast(self):
-    left = torch.randn(2, 3, 8, requires_grad=True)
-    right = torch.randn(2, 2, 8, requires_grad=True)
-    mask1 = torch.tensor([[True, True, False], [True, False, False]])
-    mask2 = torch.tensor([[True, True], [True, False]])
+  def test_bilinear_stays_float32_and_backpropagates_under_autocast(self):
+    left = torch.randn(2, 8, requires_grad=True)
+    right = torch.randn(2, 8, requires_grad=True)
     with torch.autocast("cpu", dtype=torch.bfloat16):
-      a, b = self.model.interaction(left, mask1, right, mask2)
-      loss = a.square().mean() + b.square().mean()
+      a = self.model.interaction(left, right)
+      b = self.model.interaction(right, left)
+      loss = a.square().mean()
+    torch.testing.assert_close(a, b)
     self.assertEqual(a.dtype, torch.float32)
     self.assertEqual(b.dtype, torch.float32)
     loss.backward()
