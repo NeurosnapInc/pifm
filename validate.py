@@ -225,6 +225,7 @@ def evaluate_run(run_path, cache_path=DEFAULT_CACHE_PATH, splits=("validation", 
       adapter_dim=checkpoint["config"].get("adapter_dim", ADAPTER_DIM),
       dropout=checkpoint["config"].get("dropout", DROPOUT),
       classification_head_hidden=checkpoint["config"].get("classification_head_hidden", CLASSIFICATION_HEAD_HIDDEN),
+      sequence_mask_token_id=checkpoint["config"].get("sequence_mask_token_id"),
     ).to(DEVICE)
 
     model.adapter.load_state_dict(checkpoint["adapter_state_dict"])

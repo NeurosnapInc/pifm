@@ -155,6 +155,7 @@ class CheckpointWorkflowTests(unittest.TestCase):
     self.assertTrue(torch.isfinite(left.grad).all())
     self.assertTrue(torch.isfinite(right.grad).all())
     ids = torch.tensor([[1, 2, 3]])
+    self.model.eval()
     with self.assertRaisesRegex(FloatingPointError, "Non-finite backbone embeddings"):
       self.model.encode_shared_tokens(ids, torch.ones_like(ids), torch.full((1, 3, 8), float("nan")))
 
@@ -168,6 +169,7 @@ class CheckpointWorkflowTests(unittest.TestCase):
 
   def test_residue_dropout_preserves_special_tokens_and_a_residue(self):
     self.model.train()
+    self.model.residue_dropout_probability = 0.1
     valid = torch.tensor([[1, 1, 1, 1, 1, 0], [1, 1, 1, 0, 0, 0]])
     draws = torch.tensor([[0.9, 0.02, 0.03, 0.04, 0.9, 0.9], [0.9, 0.01, 0.9, 0.9, 0.9, 0.9]])
     with patch("model.torch.rand", return_value=draws):
@@ -183,6 +185,24 @@ class CheckpointWorkflowTests(unittest.TestCase):
     self.model.eval()
     with patch("model.torch.rand", side_effect=AssertionError("evaluation must not augment")):
       torch.testing.assert_close(self.model._residue_dropout_mask(valid), valid.bool())
+
+  def test_sequence_masking_is_training_only_and_preserves_token_boundaries(self):
+    self.model.train()
+    self.model.sequence_mask_token_id = 23
+    ids = torch.tensor([[149, 3, 22, 10, 1, 0], [149, 3, 1, 0, 0, 0]])
+    original = ids.clone()
+    valid = ids.ne(0)
+    with patch("model.torch.rand", return_value=torch.zeros_like(ids, dtype=torch.float)):
+      masked = self.model._mask_sequence_tokens(ids, valid)
+    torch.testing.assert_close(ids, original)
+    torch.testing.assert_close(masked, torch.tensor([[149, 23, 23, 23, 1, 0], [149, 23, 1, 0, 0, 0]]))
+    with patch("model.torch.rand", side_effect=AssertionError("disabled residue dropout must not draw")):
+      torch.testing.assert_close(self.model._residue_dropout_mask(valid), valid)
+    with self.assertRaisesRegex(ValueError, "live backbone"):
+      self.model.encode_shared_tokens(ids, valid, torch.randn(2, 6, 8))
+    self.model.eval()
+    with patch("model.torch.rand", side_effect=AssertionError("evaluation must not mask")):
+      torch.testing.assert_close(self.model._mask_sequence_tokens(ids, valid), ids)
 
   def test_consecutive_best_saves_preserve_notes_and_invalidate_old_reports(self):
     from run_utils import load_run

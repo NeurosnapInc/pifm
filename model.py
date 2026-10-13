@@ -192,7 +192,8 @@ class PairTaskHead(nn.Module):
 
 
 class MultiTaskGroupPairModel(nn.Module):
-  residue_dropout_probability = 0.1
+  residue_dropout_probability = 0.0
+  sequence_mask_probability = 0.1
 
   def __init__(
     self,
@@ -204,12 +205,15 @@ class MultiTaskGroupPairModel(nn.Module):
     adapter_dim=ADAPTER_DIM,
     dropout=DROPOUT,
     classification_head_hidden=CLASSIFICATION_HEAD_HIDDEN,
+    sequence_mask_token_id=None,
   ):
     super().__init__()
     self.base = base_model
+    self.sequence_mask_token_id = sequence_mask_token_id
     if self.base is not None:
       for param in self.base.parameters():
         param.requires_grad = False
+      self.base.eval()
 
     self.adapter = Adapter(embed_dim, adapter_dim, dropout_prob=dropout)
     self.residue_pool = MaxPool()
@@ -225,12 +229,40 @@ class MultiTaskGroupPairModel(nn.Module):
     for task_name in task_order:
       self.heads[task_name] = PairTaskHead(PAIR_MLP_HIDDEN, task_output_dims[task_name], classification_head_hidden, dropout=dropout)
 
+  def train(self, mode=True):
+    """Train the adapter/heads without enabling dropout in the frozen backbone."""
+    super().train(mode)
+    if self.base is not None:
+      self.base.eval()
+    return self
+
+  def _mask_sequence_tokens(self, input_ids, attention_mask):
+    """Replace training residue tokens with X without changing sequence length.
+
+    Tokenization is right-padded prefix, amino-acid tokens, EOS. Prefix/EOS
+    and padding are never replaced. Work on a new tensor so cached token IDs
+    are not mutated; each occurrence gets fresh independent random masking.
+    """
+    if not self.training or self.sequence_mask_probability == 0:
+      return input_ids
+    if self.sequence_mask_token_id is None:
+      raise ValueError("Sequence masking requires the tokenizer's encoded X token ID.")
+    valid = attention_mask.bool()
+    positions = torch.arange(valid.shape[1], device=valid.device).unsqueeze(0)
+    residues = valid & (positions > 0) & (positions < valid.sum(dim=1, keepdim=True) - 1)
+    masked = residues & (torch.rand(valid.shape, device=valid.device) < self.sequence_mask_probability)
+    return input_ids.masked_fill(masked, self.sequence_mask_token_id)
+
   def encode_shared_tokens(self, input_ids, attention_mask, precomputed_embeddings=None):
+    if self.training and self.sequence_mask_probability > 0 and precomputed_embeddings is not None:
+      raise ValueError("Sequence masking requires live backbone encoding; training cannot use cached embeddings.")
     if precomputed_embeddings is None:
       if self.base is None:
         raise ValueError("A base model is required when precomputed embeddings are not provided.")
-      out = self.base(input_ids=input_ids.long(), attention_mask=attention_mask.long())
-      token_repr = out.last_hidden_state
+      masked_ids = self._mask_sequence_tokens(input_ids, attention_mask)
+      with torch.no_grad():
+        out = self.base(input_ids=masked_ids.long(), attention_mask=attention_mask.long())
+      token_repr = out.last_hidden_state.to(dtype=self.adapter.norm.weight.dtype)
     else:
       token_repr = precomputed_embeddings.to(dtype=self.adapter.norm.weight.dtype)
     if not torch.isfinite(token_repr).all():
@@ -273,7 +305,7 @@ class MultiTaskGroupPairModel(nn.Module):
     This is embedding-level augmentation, not deletion from the backbone input.
     """
     valid = attention_mask.bool()
-    if not self.training:
+    if not self.training or self.residue_dropout_probability == 0:
       return valid
     positions = torch.arange(valid.shape[1], device=valid.device).unsqueeze(0)
     residues = valid & (positions > 0) & (positions < valid.sum(dim=1, keepdim=True) - 1)

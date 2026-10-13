@@ -347,7 +347,7 @@ Test:
 - Restored **adapters + residue max + group mean + sum/absolute-difference/product features + focal-only loss**. Single-seed and repeated-test-inspection caveats apply; full comparison: [final interaction notes](runs/2026-10-12_21-35_seed_1/notes.md).
 
 ### Data Augmentation
-- [ ] Sequence masking
+- [x] Sequence masking
 - [x] Residue dropout
 - [x] Homology filtering
 - [ ] Hard negative mining
