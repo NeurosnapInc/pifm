@@ -51,15 +51,13 @@ class CheckpointWorkflowTests(unittest.TestCase):
       "adapter_state_dict": self.model.adapter.state_dict(),
       "residue_pool_state_dict": self.model.residue_pool.state_dict(),
       "group_pool_state_dict": self.model.group_pool.state_dict(),
-      "interaction_state_dict": self.model.interaction.state_dict(),
       "pair_mlp_state_dict": self.model.pair_mlp.state_dict(),
       "head_state_dicts": {"interaction": self.model.heads["interaction"].state_dict()},
       "config": {
         "embed_dim": 8, "adapter_dim": 4, "dropout": 0.0,
         "run_timestamp": "2026-10-11T18:21:00+00:00", "training_seed": 1,
-        "interaction_module": "chain_transformer",
-        "interaction_hidden_dim": 256, "interaction_heads": 4, "interaction_layers": 2,
-        "interaction_group_encoding": "same_cross_attention_bias",
+        "interaction_module": "symmetric_pair_features",
+        "residue_pooling": "max", "group_pooling": "mean",
         "calibration": {"source_split": "validation", "classification": {
           "interaction": {"threshold": 0.4, "calibration_size": 3},
         }},
@@ -98,7 +96,7 @@ class CheckpointWorkflowTests(unittest.TestCase):
       self.assertEqual(calibrated["threshold"], 0.4)
       self.assertEqual(calibrated["calibration_size"], 3)
       self.assertEqual(calibrated["calibration_split"], "validation")
-    for key in ("adapter_state_dict", "residue_pool_state_dict", "group_pool_state_dict", "interaction_state_dict", "pair_mlp_state_dict"):
+    for key in ("adapter_state_dict", "residue_pool_state_dict", "group_pool_state_dict", "pair_mlp_state_dict"):
       for name, weight in self.checkpoint[key].items():
         self.assertTrue(torch.equal(weight, saved[key][name]))
     for name, weight in self.checkpoint["head_state_dicts"]["interaction"].items():
@@ -127,22 +125,35 @@ class CheckpointWorkflowTests(unittest.TestCase):
         self.evaluate(model=self.model, embedding_cache=self.embeddings, splits=("validation",))
     self.assertEqual(self.metrics_path.read_bytes(), original)
 
-  def test_chain_transformer_stays_float32_and_backpropagates_under_autocast(self):
-    chains = torch.randn(2, 3, 8, requires_grad=True)
-    groups = torch.tensor([[0, 1, -1], [0, 0, 1]])
-    valid = groups >= 0
+  def test_original_winning_run_is_accepted_without_new_architecture_metadata(self):
+    for key in ("interaction_module", "residue_pooling", "group_pooling"):
+      self.checkpoint["config"].pop(key)
+    self.checkpoint["config"]["git_commit"] = "f9e1b1645be209a810c130f410add891439207ff"
+    self.save_updated_metadata()
+    with patch.object(validate, "_load_embedding_cache", return_value=self.embeddings):
+      saved = self.evaluate()
+    self.assertEqual(set(saved["splits"]), {"validation", "test"})
+
+  def test_learned_interaction_run_is_not_silently_loaded_as_fixed_features(self):
+    self.checkpoint["config"]["interaction_module"] = "chain_transformer"
+    self.save_updated_metadata()
+    with self.assertRaisesRegex(ValueError, "recorded git_commit"):
+      self.evaluate(model=self.model, embedding_cache=self.embeddings)
+
+  def test_fixed_pair_features_are_symmetric_and_backpropagate_under_autocast(self):
+    left = torch.randn(2, 8, requires_grad=True)
+    right = torch.randn(2, 8, requires_grad=True)
     with torch.autocast("cpu", dtype=torch.bfloat16):
-      a = self.model.interaction(chains, groups, valid)
-      b = self.model.interaction(chains, torch.where(valid, 1 - groups, groups), valid)
+      a = self.model._pair_features(left, right)
+      b = self.model._pair_features(right, left)
       loss = a.square().mean()
     torch.testing.assert_close(a, b)
+    torch.testing.assert_close(a, torch.cat([left + right, (left - right).abs(), left * right], dim=-1))
     self.assertEqual(a.dtype, torch.float32)
     self.assertEqual(b.dtype, torch.float32)
     loss.backward()
-    for parameter in self.model.interaction.parameters():
-      self.assertIsNotNone(parameter.grad)
-      self.assertTrue(torch.isfinite(parameter.grad).all())
-    self.assertTrue(torch.isfinite(chains.grad).all())
+    self.assertTrue(torch.isfinite(left.grad).all())
+    self.assertTrue(torch.isfinite(right.grad).all())
     ids = torch.tensor([[1, 2, 3]])
     with self.assertRaisesRegex(FloatingPointError, "Non-finite backbone embeddings"):
       self.model.encode_shared_tokens(ids, torch.ones_like(ids), torch.full((1, 3, 8), float("nan")))

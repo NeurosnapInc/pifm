@@ -340,6 +340,12 @@ Test:
 - [x] Bilinear interaction layers
 - [x] Small Transformer operating on chain embeddings
 
+#### Ablation Results:
+- **Winner: fixed symmetric pair features** (`2026-10-08_01-46_seed_1`): highest validation AUROC (0.9551), test AUROC/AUPRC (0.9356/0.9856), and calibrated test balanced accuracy/MCC (0.8692/0.6611).
+- Chain Transformer was strongest among learned modules on test ranking (AUROC 0.9215), but calibrated specificity fell to 0.3380; it recovered 93 positives for 103 additional false positives versus baseline. Its F1 was essentially tied with baseline (0.9464 versus 0.9462).
+- Cross-attention and bilinear also weakened negative rejection, with calibrated test balanced accuracy 0.6303 and 0.5600 respectively. Higher positive recall did not offset false positives.
+- Restored **adapters + residue max + group mean + sum/absolute-difference/product features + focal-only loss**. Single-seed and repeated-test-inspection caveats apply; full comparison: [final interaction notes](runs/2026-10-12_21-35_seed_1/notes.md).
+
 ### Data Augmentation
 - [ ] Sequence masking
 - [ ] Residue dropout

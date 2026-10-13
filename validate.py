@@ -32,7 +32,6 @@ from model import (
   MultiTaskBatchSampler,
   MultiTaskGroupPairDataset,
   MultiTaskGroupPairModel,
-  ChainTransformerInteraction,
   collate_multitask_batch,
   load_backbone_embedding_cache,
   output_dim_from_meta,
@@ -173,16 +172,16 @@ def evaluate_run(run_path, cache_path=DEFAULT_CACHE_PATH, splits=("validation", 
 
   print("Loading checkpoint and tokenized cache")
   run_dir, checkpoint = load_run(run_path)
-  if checkpoint["config"].get("interaction_module") != "chain_transformer" or "interaction_state_dict" not in checkpoint:
-    raise ValueError("Current architecture uses a chain Transformer. Evaluate older runs using their recorded git_commit.")
-  expected = {
-    "interaction_hidden_dim": ChainTransformerInteraction.hidden_dim,
-    "interaction_heads": ChainTransformerInteraction.heads,
-    "interaction_layers": ChainTransformerInteraction.layers,
-    "interaction_group_encoding": "same_cross_attention_bias",
-  }
-  if any(checkpoint["config"].get(key) != value for key, value in expected.items()):
-    raise ValueError("Run Transformer settings do not match the current architecture; use its recorded git_commit.")
+  architecture = checkpoint["config"].get("interaction_module")
+  # The original winning run predates architecture metadata but has this exact model.
+  original_winner = (architecture is None
+                     and checkpoint["config"].get("git_commit") == "f9e1b1645be209a810c130f410add891439207ff")
+  if (architecture != "symmetric_pair_features" and not original_winner
+      or "interaction_state_dict" in checkpoint or "lora_state_dict" in checkpoint):
+    raise ValueError("Current architecture uses fixed symmetric pair features. Evaluate other ablations using their recorded git_commit.")
+  if architecture is not None and (checkpoint["config"].get("residue_pooling") != "max"
+                                   or checkpoint["config"].get("group_pooling") != "mean"):
+    raise ValueError("Run pooling does not match residue max/group mean; use its recorded git_commit.")
   if payload is None:
     payload = torch.load(cache_path, map_location="cpu")
 
@@ -231,7 +230,6 @@ def evaluate_run(run_path, cache_path=DEFAULT_CACHE_PATH, splits=("validation", 
     model.adapter.load_state_dict(checkpoint["adapter_state_dict"])
     model.residue_pool.load_state_dict(checkpoint["residue_pool_state_dict"])
     model.group_pool.load_state_dict(checkpoint["group_pool_state_dict"])
-    model.interaction.load_state_dict(checkpoint["interaction_state_dict"])
     model.pair_mlp.load_state_dict(checkpoint["pair_mlp_state_dict"])
     for task_name, state_dict in checkpoint["head_state_dicts"].items():
       model.heads[task_name].load_state_dict(state_dict)

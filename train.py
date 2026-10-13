@@ -49,7 +49,6 @@ from model import (
   MultiTaskBatchSampler,
   MultiTaskGroupPairDataset,
   MultiTaskGroupPairModel,
-  ChainTransformerInteraction,
   collate_multitask_batch,
   load_backbone_embedding_cache,
   output_dim_from_meta,
@@ -58,7 +57,7 @@ from model import (
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 AMP_ENABLED = DEVICE.type == "cuda"
-COMPILE_MODEL = False  # Retain eager execution for the interaction ablations.
+COMPILE_MODEL = False  # Retain eager execution and numerical diagnostics after the ablations.
 PIN_MEMORY = DEVICE.type == "cuda"
 USE_FUSED_ADAMW = DEVICE.type == "cuda"
 TASK_NAME = "interaction"
@@ -353,7 +352,6 @@ optimizer = torch.optim.AdamW(
     {"params": model_ref.adapter.parameters()},
     {"params": model_ref.residue_pool.parameters()},
     {"params": model_ref.group_pool.parameters()},
-    {"params": model_ref.interaction.parameters()},
     {"params": model_ref.pair_mlp.parameters()},
     {"params": model_ref.heads.parameters()},
   ],
@@ -365,7 +363,6 @@ trainable_params = (
   list(model_ref.adapter.parameters())
   + list(model_ref.residue_pool.parameters())
   + list(model_ref.group_pool.parameters())
-  + list(model_ref.interaction.parameters())
   + list(model_ref.pair_mlp.parameters())
   + list(model_ref.heads.parameters())
 )
@@ -382,7 +379,6 @@ def _save_current_best(model_ref, best_state, calibration, run_dir, saved_at):
       "adapter_state_dict": model_ref.adapter.state_dict(),
       "residue_pool_state_dict": model_ref.residue_pool.state_dict(),
       "group_pool_state_dict": model_ref.group_pool.state_dict(),
-      "interaction_state_dict": model_ref.interaction.state_dict(),
       "pair_mlp_state_dict": model_ref.pair_mlp.state_dict(),
       "head_state_dicts": {task_name: head.state_dict() for task_name, head in model_ref.heads.items()},
       "config": {
@@ -391,12 +387,9 @@ def _save_current_best(model_ref, best_state, calibration, run_dir, saved_at):
         "embed_dim": embed_dim,
         "adapter_dim": ADAPTER_DIM,
         "fine_tuning": "adapters",
-        "interaction_module": "chain_transformer",
-        "interaction_hidden_dim": ChainTransformerInteraction.hidden_dim,
-        "interaction_heads": ChainTransformerInteraction.heads,
-        "interaction_layers": ChainTransformerInteraction.layers,
-        "interaction_group_encoding": "same_cross_attention_bias",
-        "interaction_precision": "float32_math_attention",
+        "interaction_module": "symmetric_pair_features",
+        "residue_pooling": "max",
+        "group_pooling": "mean",
         "dropout": DROPOUT,
         "classification_head_hidden": CLASSIFICATION_HEAD_HIDDEN,
         "model_name": MODEL_NAME,
@@ -426,14 +419,12 @@ def _save_current_best(model_ref, best_state, calibration, run_dir, saved_at):
     overwrite=True,
     notes=(
       f"# Run {run_dir.name}\n\nFrozen ProstT5 + adapters with residue max pooling.\n\n"
-      "Interaction ablation: a small Transformer over both groups' chain embeddings\n"
-      "(two pre-normalized blocks, four heads, 256-dimensional width). Learned\n"
-      "same-group/cross-group attention biases encode the partition without positional\n"
-      "or group-ID embeddings. Mean-pool contextualized chains per group, then use\n"
-      "the original symmetric sum/absolute-difference/product classifier features.\n"
+      "Restored winning architecture: residue max pooling, equal-weight group mean\n"
+      "pooling, and fixed symmetric sum/absolute-difference/elementwise-product\n"
+      "features followed by the pair MLP and classifier. No learned interaction encoder.\n"
       "Historical class-weighted focal loss only (gamma 2, exp(-weighted CE), batch mean).\n"
       "Frozen backbone embedding caches are reusable; no LoRA or contrastive term.\n"
-      "Eager execution and float32 math attention are retained under autocast.\n"
+      "Eager execution and numerical safeguards are retained after the ablations.\n"
       "Non-finite inputs/logits/loss/gradients abort training.\n"
       "Each validation-AUROC improvement is checkpointed immediately.\n"
     ),
@@ -508,7 +499,6 @@ for epoch in range(EPOCHS):
       "adapter": {k: v.detach().cpu().clone() for k, v in model_ref.adapter.state_dict().items()},
       "residue_pool": {k: v.detach().cpu().clone() for k, v in model_ref.residue_pool.state_dict().items()},
       "group_pool": {k: v.detach().cpu().clone() for k, v in model_ref.group_pool.state_dict().items()},
-      "interaction": {k: v.detach().cpu().clone() for k, v in model_ref.interaction.state_dict().items()},
       "pair_mlp": {k: v.detach().cpu().clone() for k, v in model_ref.pair_mlp.state_dict().items()},
       "heads": {task_name: {k: v.detach().cpu().clone() for k, v in head.state_dict().items()} for task_name, head in model_ref.heads.items()},
       "selection_metric": selection_metric,
@@ -529,7 +519,6 @@ if best_state is not None:
   model_ref.adapter.load_state_dict(best_state["adapter"])
   model_ref.residue_pool.load_state_dict(best_state["residue_pool"])
   model_ref.group_pool.load_state_dict(best_state["group_pool"])
-  model_ref.interaction.load_state_dict(best_state["interaction"])
   model_ref.pair_mlp.load_state_dict(best_state["pair_mlp"])
   for task_name, state_dict in best_state["heads"].items():
     model_ref.heads[task_name].load_state_dict(state_dict)
