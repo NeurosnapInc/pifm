@@ -390,6 +390,14 @@ def _save_current_best(model_ref, best_state, calibration, run_dir, saved_at):
         "interaction_module": "symmetric_pair_features",
         "residue_pooling": "max",
         "group_pooling": "mean",
+        "data_augmentation": {
+          "type": "residue_embedding_dropout",
+          "probability": model_ref.residue_dropout_probability,
+          "stage": "post_adapter_pre_residue_pool",
+          "training_only": True,
+          "preserve_special_tokens": True,
+          "minimum_retained_residues": 1,
+        },
         "dropout": DROPOUT,
         "classification_head_hidden": CLASSIFICATION_HEAD_HIDDEN,
         "model_name": MODEL_NAME,
@@ -422,6 +430,10 @@ def _save_current_best(model_ref, best_state, calibration, run_dir, saved_at):
       "Restored winning architecture: residue max pooling, equal-weight group mean\n"
       "pooling, and fixed symmetric sum/absolute-difference/elementwise-product\n"
       "features followed by the pair MLP and classifier. No learned interaction encoder.\n"
+      f"Data augmentation ablation: training-only residue-embedding dropout at {model_ref.residue_dropout_probability:.0%}.\n"
+      "Exclude amino-acid positions from max pooling after the adapter; preserve prefix/EOS\n"
+      "and at least one residue per chain. The backbone input and cached embeddings\n"
+      "are unchanged; validation/test use all original token positions.\n"
       "Historical class-weighted focal loss only (gamma 2, exp(-weighted CE), batch mean).\n"
       "Frozen backbone embedding caches are reusable; no LoRA or contrastive term.\n"
       "Eager execution and numerical safeguards are retained after the ablations.\n"

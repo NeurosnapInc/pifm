@@ -192,6 +192,8 @@ class PairTaskHead(nn.Module):
 
 
 class MultiTaskGroupPairModel(nn.Module):
+  residue_dropout_probability = 0.1
+
   def __init__(
     self,
     base_model,
@@ -260,9 +262,32 @@ class MultiTaskGroupPairModel(nn.Module):
       dim=-1,
     )
 
+  def _residue_dropout_mask(self, attention_mask):
+    """Exclude random residue vectors from training-time chain max pooling.
+
+    Current tokenization is right-padded <AA2fold>, amino-acid tokens, EOS.
+    Keep both special-token positions and padding semantics unchanged. Draw
+    independently per occurrence of a chain, retaining at least one residue
+    when all its residue positions would otherwise be dropped. Exclusion via
+    the pooling mask, rather than zeroing, also works for negative features.
+    This is embedding-level augmentation, not deletion from the backbone input.
+    """
+    valid = attention_mask.bool()
+    if not self.training:
+      return valid
+    positions = torch.arange(valid.shape[1], device=valid.device).unsqueeze(0)
+    residues = valid & (positions > 0) & (positions < valid.sum(dim=1, keepdim=True) - 1)
+    draws = torch.rand(valid.shape, device=valid.device)
+    kept = valid & (~residues | (draws >= self.residue_dropout_probability))
+    needs_rescue = residues.any(dim=1) & ~(kept & residues).any(dim=1)
+    # The highest draw selects a random surviving residue when a chain loses all.
+    rescue_position = draws.masked_fill(~residues, -1).argmax(dim=1, keepdim=True)
+    return kept | ((positions == rescue_position) & needs_rescue.unsqueeze(1))
+
   def forward(self, input_ids, attention_mask, chain_to_sample, chain_to_group, batch_size, precomputed_embeddings=None):
     shared_tokens = self.encode_shared_tokens(input_ids, attention_mask, precomputed_embeddings=precomputed_embeddings)
-    chain_embeddings = self.residue_pool(shared_tokens, attention_mask)
+    pooling_mask = self._residue_dropout_mask(attention_mask)
+    chain_embeddings = self.residue_pool(shared_tokens, pooling_mask)
     group1_embeddings = self._pool_group(chain_embeddings, chain_to_sample, chain_to_group, batch_size, group_id=0)
     group2_embeddings = self._pool_group(chain_embeddings, chain_to_sample, chain_to_group, batch_size, group_id=1)
     pair_hidden = self.pair_mlp(self._pair_features(group1_embeddings, group2_embeddings))

@@ -348,7 +348,7 @@ Test:
 
 ### Data Augmentation
 - [ ] Sequence masking
-- [ ] Residue dropout
+- [x] Residue dropout
 - [x] Homology filtering
 - [ ] Hard negative mining
 

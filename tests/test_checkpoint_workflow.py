@@ -166,6 +166,24 @@ class CheckpointWorkflowTests(unittest.TestCase):
     self.assertEqual(self.metrics_path.read_bytes(), original)
     self.assertFalse(list(self.directory.glob(".*.tmp")))
 
+  def test_residue_dropout_preserves_special_tokens_and_a_residue(self):
+    self.model.train()
+    valid = torch.tensor([[1, 1, 1, 1, 1, 0], [1, 1, 1, 0, 0, 0]])
+    draws = torch.tensor([[0.9, 0.02, 0.03, 0.04, 0.9, 0.9], [0.9, 0.01, 0.9, 0.9, 0.9, 0.9]])
+    with patch("model.torch.rand", return_value=draws):
+      kept = self.model._residue_dropout_mask(valid)
+    torch.testing.assert_close(kept, torch.tensor([
+      [True, False, False, True, True, False], [True, True, True, False, False, False],
+    ]))
+    # Dropped residue positions must not beat negative retained features as zeros would.
+    values = -torch.ones(2, 6, 8)
+    values[0, 1:3] = 10
+    pooled = self.model.residue_pool(values, kept)
+    torch.testing.assert_close(pooled, -torch.ones(2, 8))
+    self.model.eval()
+    with patch("model.torch.rand", side_effect=AssertionError("evaluation must not augment")):
+      torch.testing.assert_close(self.model._residue_dropout_mask(valid), valid.bool())
+
   def test_consecutive_best_saves_preserve_notes_and_invalidate_old_reports(self):
     from run_utils import load_run
 
