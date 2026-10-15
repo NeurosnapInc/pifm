@@ -274,8 +274,10 @@ pad_token_id = payload["config"]["pad_token_id"]
 task_idx = task_order.index(TASK_NAME)
 
 embedding_cache = _load_embedding_cache()
-print("Sequence masking uses live frozen-backbone encoding for training; caches are evaluation-only.")
-train_ds = MultiTaskGroupPairDataset(train_split)
+sequence_masking = MultiTaskGroupPairModel.sequence_mask_probability > 0
+if sequence_masking:
+  print("Sequence masking uses live frozen-backbone encoding for training; caches are evaluation-only.")
+train_ds = MultiTaskGroupPairDataset(train_split, embedding_cache=None if sequence_masking else embedding_cache)
 val_ds = MultiTaskGroupPairDataset(val_split, embedding_cache=embedding_cache)
 train_sample_weights, train_label_counts = _compute_sample_weights(train_split, task_order)
 
@@ -286,16 +288,22 @@ print(
   f"{train_label_counts[TASK_NAME]}/{int(val_split['label_mask'][:, task_idx].sum().item())}"
 )
 
-tokenizer = T5Tokenizer.from_pretrained(MODEL_NAME, do_lower_case=False)
-# SentencePiece's encoded X token is not necessarily convert_tokens_to_ids("X").
-mask_ids = tokenizer.encode("X", add_special_tokens=False)
-if len(mask_ids) != 1 or mask_ids[0] in tokenizer.all_special_ids:
-  raise ValueError("Expected one non-special amino-acid X token for sequence masking.")
-sequence_mask_token_id = mask_ids[0]
-base_model = T5EncoderModel.from_pretrained(MODEL_NAME).to(DEVICE)
-if DEVICE.type == "cuda":
-  base_model.bfloat16()
-embed_dim = base_model.config.d_model
+sequence_mask_token_id = None
+if sequence_masking:
+  tokenizer = T5Tokenizer.from_pretrained(MODEL_NAME, do_lower_case=False)
+  # SentencePiece's encoded X token is not necessarily convert_tokens_to_ids("X").
+  mask_ids = tokenizer.encode("X", add_special_tokens=False)
+  if len(mask_ids) != 1 or mask_ids[0] in tokenizer.all_special_ids:
+    raise ValueError("Expected one non-special amino-acid X token for sequence masking.")
+  sequence_mask_token_id = mask_ids[0]
+if embedding_cache is None or sequence_masking:
+  base_model = T5EncoderModel.from_pretrained(MODEL_NAME).to(DEVICE)
+  if DEVICE.type == "cuda":
+    base_model.bfloat16()
+  embed_dim = base_model.config.d_model
+else:
+  base_model = None
+  embed_dim = next(iter(embedding_cache.values())).shape[-1]
 
 train_loader = DataLoader(
   train_ds,
@@ -395,10 +403,10 @@ def _save_current_best(model_ref, best_state, calibration, run_dir, saved_at):
         "residue_pooling": "max",
         "group_pooling": "mean",
         "data_augmentation": {
-          "type": "sequence_masking",
+          "type": "sequence_masking" if sequence_masking else "none",
           "probability": model_ref.sequence_mask_probability,
-          "stage": "pre_backbone",
-          "replacement": "X",
+          "stage": "pre_backbone" if sequence_masking else None,
+          "replacement": "X" if sequence_masking else None,
           "replacement_token_id": sequence_mask_token_id,
           "training_only": True,
           "preserve_special_tokens": True,
@@ -418,7 +426,7 @@ def _save_current_best(model_ref, best_state, calibration, run_dir, saved_at):
         "focal_reduction": "batch_mean",
         "interaction_pos_neg_ratio": INTERACTION_POS_NEG_RATIO,
         "source_balanced_sampling": SOURCE_BALANCED_SAMPLING,
-        "used_backbone_embedding_cache": False,
+        "used_backbone_embedding_cache": embedding_cache is not None and not sequence_masking,
         "evaluation_used_backbone_embedding_cache": embedding_cache is not None,
         "backbone_embedding_cache_path": str(BACKBONE_EMBEDDING_CACHE_PATH) if embedding_cache is not None else None,
         "calibration": calibration,
@@ -438,13 +446,12 @@ def _save_current_best(model_ref, best_state, calibration, run_dir, saved_at):
       "Restored winning architecture: residue max pooling, equal-weight group mean\n"
       "pooling, and fixed symmetric sum/absolute-difference/elementwise-product\n"
       "features followed by the pair MLP and classifier. No learned interaction encoder.\n"
-      f"Data augmentation ablation: training-only sequence masking at {model_ref.sequence_mask_probability:.0%}.\n"
-      "Replace residue input tokens with encoded X before frozen backbone encoding;\n"
-      "preserve sequence length, prefix/EOS, and padding. Residue dropout is disabled (0%).\n"
-      "Training bypasses embedding caches; unmasked validation/test may reuse them.\n"
+      f"Sequence masking: {model_ref.sequence_mask_probability:.0%}; residue dropout: {model_ref.residue_dropout_probability:.0%}.\n"
+      "Both augmentation implementations are retained but disabled for the baseline.\n"
+      "Cached backbone embeddings are reused for training/evaluation when available.\n"
       "The frozen backbone stays in evaluation mode and is encoded without gradients.\n"
       f"Token budgets: train {TRAIN_MAX_TOKENS_PER_BATCH}, evaluation {EVAL_MAX_TOKENS_PER_BATCH}.\n"
-      "Reduced budgets can change batching/step counts versus cached baselines.\n"
+      "Original cached-baseline token budgets are restored.\n"
       "Historical class-weighted focal loss only (gamma 2, exp(-weighted CE), batch mean).\n"
       "No LoRA or contrastive term; existing tokenized data is reused unchanged.\n"
       "Eager execution and numerical safeguards are retained after the ablations.\n"

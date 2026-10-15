@@ -193,7 +193,7 @@ class PairTaskHead(nn.Module):
 
 class MultiTaskGroupPairModel(nn.Module):
   residue_dropout_probability = 0.0
-  sequence_mask_probability = 0.1
+  sequence_mask_probability = 0.0
 
   def __init__(
     self,

@@ -59,6 +59,5 @@ PAIR_MLP_HIDDEN = 512
 CLASSIFICATION_HEAD_HIDDEN = 256
 
 ### Token-Capped Batching
-# Sequence masking needs live frozen-backbone passes, unlike cached training.
-TRAIN_MAX_TOKENS_PER_BATCH = 8192
-EVAL_MAX_TOKENS_PER_BATCH = 16384
+TRAIN_MAX_TOKENS_PER_BATCH = 49152
+EVAL_MAX_TOKENS_PER_BATCH = 65536

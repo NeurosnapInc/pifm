@@ -188,6 +188,7 @@ class CheckpointWorkflowTests(unittest.TestCase):
 
   def test_sequence_masking_is_training_only_and_preserves_token_boundaries(self):
     self.model.train()
+    self.model.sequence_mask_probability = 0.1
     self.model.sequence_mask_token_id = 23
     ids = torch.tensor([[149, 3, 22, 10, 1, 0], [149, 3, 1, 0, 0, 0]])
     original = ids.clone()
@@ -203,6 +204,21 @@ class CheckpointWorkflowTests(unittest.TestCase):
     self.model.eval()
     with patch("model.torch.rand", side_effect=AssertionError("evaluation must not mask")):
       torch.testing.assert_close(self.model._mask_sequence_tokens(ids, valid), ids)
+
+  def test_disabled_augmentations_do_not_consume_rng_or_block_cached_training(self):
+    self.model.train()
+    self.assertEqual(self.model.sequence_mask_probability, 0.0)
+    self.assertEqual(self.model.residue_dropout_probability, 0.0)
+    ids = torch.tensor([[149, 3, 1]])
+    valid = torch.ones_like(ids)
+    with patch("model.torch.rand", side_effect=AssertionError("baseline must not augment")):
+      torch.testing.assert_close(self.model._mask_sequence_tokens(ids, valid), ids)
+      torch.testing.assert_close(self.model._residue_dropout_mask(valid), valid.bool())
+      embeddings = torch.randn(1, 3, 8)
+      result = self.model.encode_shared_tokens(None, valid, embeddings)
+    result.square().mean().backward()
+    self.assertTrue(torch.isfinite(result).all())
+    self.assertIsNotNone(self.model.adapter.scale.grad)
 
   def test_consecutive_best_saves_preserve_notes_and_invalidate_old_reports(self):
     from run_utils import load_run
