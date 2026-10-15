@@ -57,7 +57,7 @@ from model import (
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 AMP_ENABLED = DEVICE.type == "cuda"
-COMPILE_MODEL = False  # Retain eager execution and numerical diagnostics after the ablations.
+COMPILE_MODEL = DEVICE.type == "cuda"
 PIN_MEMORY = DEVICE.type == "cuda"
 USE_FUSED_ADAMW = DEVICE.type == "cuda"
 TASK_NAME = "interaction"
@@ -454,7 +454,7 @@ def _save_current_best(model_ref, best_state, calibration, run_dir, saved_at):
       "Original cached-baseline token budgets are restored.\n"
       "Historical class-weighted focal loss only (gamma 2, exp(-weighted CE), batch mean).\n"
       "No LoRA or contrastive term; existing tokenized data is reused unchanged.\n"
-      "Eager execution and numerical safeguards are retained after the ablations.\n"
+      "CUDA compilation is enabled when available; numerical safeguards are retained.\n"
       "Non-finite inputs/logits/loss/gradients abort training.\n"
       "Each validation-AUROC improvement is checkpointed immediately.\n"
     ),
