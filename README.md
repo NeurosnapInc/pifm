@@ -350,7 +350,6 @@ Test:
 - [x] Sequence masking
 - [x] Residue dropout
 - [x] Homology filtering
-- [ ] Hard negative mining
 
 ### Loss Functions
 - [x] BCE
