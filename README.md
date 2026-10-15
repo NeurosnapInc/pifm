@@ -351,6 +351,12 @@ Test:
 - [x] Residue dropout
 - [x] Homology filtering
 
+#### Ablation Results:
+- **Retain no augmentation** (`2026-10-08_01-46_seed_1`) for ranking and balanced detection: test AUROC 0.9356, calibrated balanced accuracy 0.8692, specificity 0.8148, and MCC 0.6611. Homology filtering was held fixed, not separately ablated here.
+- **10% residue-embedding dropout** improved calibrated test F1 (0.9567 versus 0.9462) with essentially unchanged MCC (0.6606), but recovered 57 positives for 32 additional false positives; balanced accuracy fell to 0.8155. A promising recall/F1 tradeoff, not an overall win. [Run notes](runs/2026-10-13_00-45_seed_1/notes.md).
+- **10% sequence masking with X** underperformed dropout: test AUROC 0.9039, calibrated balanced accuracy 0.7953, MCC 0.6130, and F1 0.9503, with seven more false positives and eleven more false negatives than dropout. Live encoding and reduced token budgets limit attribution to masking alone. [Run notes](runs/2026-10-13_17-24_seed_1/notes.md).
+- Both augmentations are disabled but retained. Results are single-seed evidence; repeated test inspection warrants a fresh final holdout before drawing definitive generalization conclusions.
+
 ### Loss Functions
 - [x] BCE
 - [x] BCE + contrastive term
