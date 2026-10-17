@@ -2,7 +2,7 @@ from pathlib import Path
 
 ### Backbone
 MODEL_NAME = "Rostlab/ProstT5"
-GLOBAL_SEED = 1
+GLOBAL_SEED = 26
 RUNS_DIR = Path("runs")
 
 ### Aggregation
