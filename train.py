@@ -3,10 +3,12 @@ Train the interaction classifier with a frozen ProstT5 backbone and lightweight 
 """
 
 import argparse
+import platform
 import random
 import warnings
 from collections import Counter
 from datetime import datetime
+from importlib.metadata import version
 
 import numpy as np
 import torch
@@ -15,7 +17,7 @@ import torch.nn.functional as F
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, matthews_corrcoef, roc_auc_score
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import T5EncoderModel, T5Tokenizer, get_linear_schedule_with_warmup
+from transformers import T5EncoderModel, get_linear_schedule_with_warmup
 
 from calibration import fit_posthoc_calibration
 from run_utils import create_run_directory, git_revision, save_run
@@ -207,6 +209,9 @@ def _forward_model(model, batch):
     input_ids = input_ids.to(DEVICE, non_blocking=PIN_MEMORY)
   if input_embeddings is not None:
     input_embeddings = input_embeddings.to(DEVICE, non_blocking=PIN_MEMORY)
+    # Keep tensor-dependent diagnostics outside the torch.compile model graph.
+    if not torch.isfinite(input_embeddings).all():
+      raise FloatingPointError("Non-finite backbone embeddings; check the embedding cache/input.")
   attn_mask = attn_mask.to(DEVICE, non_blocking=PIN_MEMORY)
   chain_to_sample = chain_to_sample.to(DEVICE, non_blocking=PIN_MEMORY)
   chain_to_group = chain_to_group.to(DEVICE, non_blocking=PIN_MEMORY)
@@ -274,10 +279,7 @@ pad_token_id = payload["config"]["pad_token_id"]
 task_idx = task_order.index(TASK_NAME)
 
 embedding_cache = _load_embedding_cache()
-sequence_masking = MultiTaskGroupPairModel.sequence_mask_probability > 0
-if sequence_masking:
-  print("Sequence masking uses live frozen-backbone encoding for training; caches are evaluation-only.")
-train_ds = MultiTaskGroupPairDataset(train_split, embedding_cache=None if sequence_masking else embedding_cache)
+train_ds = MultiTaskGroupPairDataset(train_split, embedding_cache=embedding_cache)
 val_ds = MultiTaskGroupPairDataset(val_split, embedding_cache=embedding_cache)
 train_sample_weights, train_label_counts = _compute_sample_weights(train_split, task_order)
 
@@ -288,15 +290,7 @@ print(
   f"{train_label_counts[TASK_NAME]}/{int(val_split['label_mask'][:, task_idx].sum().item())}"
 )
 
-sequence_mask_token_id = None
-if sequence_masking:
-  tokenizer = T5Tokenizer.from_pretrained(MODEL_NAME, do_lower_case=False)
-  # SentencePiece's encoded X token is not necessarily convert_tokens_to_ids("X").
-  mask_ids = tokenizer.encode("X", add_special_tokens=False)
-  if len(mask_ids) != 1 or mask_ids[0] in tokenizer.all_special_ids:
-    raise ValueError("Expected one non-special amino-acid X token for sequence masking.")
-  sequence_mask_token_id = mask_ids[0]
-if embedding_cache is None or sequence_masking:
+if embedding_cache is None:
   base_model = T5EncoderModel.from_pretrained(MODEL_NAME).to(DEVICE)
   if DEVICE.type == "cuda":
     base_model.bfloat16()
@@ -348,7 +342,6 @@ model = MultiTaskGroupPairModel(
   adapter_dim=ADAPTER_DIM,
   dropout=DROPOUT,
   classification_head_hidden=CLASSIFICATION_HEAD_HIDDEN,
-  sequence_mask_token_id=sequence_mask_token_id,
 ).to(DEVICE)
 
 if COMPILE_MODEL and hasattr(torch, "compile"):
@@ -395,6 +388,25 @@ def _save_current_best(model_ref, best_state, calibration, run_dir, saved_at):
       "head_state_dicts": {task_name: head.state_dict() for task_name, head in model_ref.heads.items()},
       "config": {
         "git_commit": git_revision(),
+        "execution": {
+          "python": platform.python_version(),
+          "torch": str(torch.__version__),
+          "numpy": np.__version__,
+          "transformers": version("transformers"),
+          "scikit_learn": version("scikit-learn"),
+          "device": str(DEVICE),
+          "gpu": torch.cuda.get_device_name(DEVICE) if DEVICE.type == "cuda" else None,
+          "cuda": torch.version.cuda,
+          "cudnn": torch.backends.cudnn.version(),
+          "compile_requested": COMPILE_MODEL,
+          "compile_wrapper_active": hasattr(model, "_orig_mod"),
+          "amp_dtype": "bfloat16" if AMP_ENABLED else None,
+          "fused_adamw": USE_FUSED_ADAMW,
+          "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
+          "matmul_precision": torch.get_float32_matmul_precision(),
+          "cuda_matmul_allow_tf32": torch.backends.cuda.matmul.allow_tf32,
+          "cudnn_allow_tf32": torch.backends.cudnn.allow_tf32,
+        },
         "settings": {name: value for name, value in vars(run_configuration).items() if name.isupper()},
         "embed_dim": embed_dim,
         "adapter_dim": ADAPTER_DIM,
@@ -402,17 +414,7 @@ def _save_current_best(model_ref, best_state, calibration, run_dir, saved_at):
         "interaction_module": "symmetric_pair_features",
         "residue_pooling": "max",
         "group_pooling": "mean",
-        "data_augmentation": {
-          "type": "sequence_masking" if sequence_masking else "none",
-          "probability": model_ref.sequence_mask_probability,
-          "stage": "pre_backbone" if sequence_masking else None,
-          "replacement": "X" if sequence_masking else None,
-          "replacement_token_id": sequence_mask_token_id,
-          "training_only": True,
-          "preserve_special_tokens": True,
-        },
-        "residue_dropout_probability": model_ref.residue_dropout_probability,
-        "sequence_mask_token_id": sequence_mask_token_id,
+        "data_augmentation": "none",
         "dropout": DROPOUT,
         "classification_head_hidden": CLASSIFICATION_HEAD_HIDDEN,
         "model_name": MODEL_NAME,
@@ -426,7 +428,7 @@ def _save_current_best(model_ref, best_state, calibration, run_dir, saved_at):
         "focal_reduction": "batch_mean",
         "interaction_pos_neg_ratio": INTERACTION_POS_NEG_RATIO,
         "source_balanced_sampling": SOURCE_BALANCED_SAMPLING,
-        "used_backbone_embedding_cache": embedding_cache is not None and not sequence_masking,
+        "used_backbone_embedding_cache": embedding_cache is not None,
         "evaluation_used_backbone_embedding_cache": embedding_cache is not None,
         "backbone_embedding_cache_path": str(BACKBONE_EMBEDDING_CACHE_PATH) if embedding_cache is not None else None,
         "calibration": calibration,
@@ -446,8 +448,7 @@ def _save_current_best(model_ref, best_state, calibration, run_dir, saved_at):
       "Restored winning architecture: residue max pooling, equal-weight group mean\n"
       "pooling, and fixed symmetric sum/absolute-difference/elementwise-product\n"
       "features followed by the pair MLP and classifier. No learned interaction encoder.\n"
-      f"Sequence masking: {model_ref.sequence_mask_probability:.0%}; residue dropout: {model_ref.residue_dropout_probability:.0%}.\n"
-      "Both augmentation implementations are retained but disabled for the baseline.\n"
+      "No data augmentation.\n"
       "Cached backbone embeddings are reused for training/evaluation when available.\n"
       "The frozen backbone stays in evaluation mode and is encoded without gradients.\n"
       f"Token budgets: train {TRAIN_MAX_TOKENS_PER_BATCH}, evaluation {EVAL_MAX_TOKENS_PER_BATCH}.\n"

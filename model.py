@@ -192,9 +192,6 @@ class PairTaskHead(nn.Module):
 
 
 class MultiTaskGroupPairModel(nn.Module):
-  residue_dropout_probability = 0.0
-  sequence_mask_probability = 0.0
-
   def __init__(
     self,
     base_model,
@@ -205,11 +202,9 @@ class MultiTaskGroupPairModel(nn.Module):
     adapter_dim=ADAPTER_DIM,
     dropout=DROPOUT,
     classification_head_hidden=CLASSIFICATION_HEAD_HIDDEN,
-    sequence_mask_token_id=None,
   ):
     super().__init__()
     self.base = base_model
-    self.sequence_mask_token_id = sequence_mask_token_id
     if self.base is not None:
       for param in self.base.parameters():
         param.requires_grad = False
@@ -236,37 +231,15 @@ class MultiTaskGroupPairModel(nn.Module):
       self.base.eval()
     return self
 
-  def _mask_sequence_tokens(self, input_ids, attention_mask):
-    """Replace training residue tokens with X without changing sequence length.
-
-    Tokenization is right-padded prefix, amino-acid tokens, EOS. Prefix/EOS
-    and padding are never replaced. Work on a new tensor so cached token IDs
-    are not mutated; each occurrence gets fresh independent random masking.
-    """
-    if not self.training or self.sequence_mask_probability == 0:
-      return input_ids
-    if self.sequence_mask_token_id is None:
-      raise ValueError("Sequence masking requires the tokenizer's encoded X token ID.")
-    valid = attention_mask.bool()
-    positions = torch.arange(valid.shape[1], device=valid.device).unsqueeze(0)
-    residues = valid & (positions > 0) & (positions < valid.sum(dim=1, keepdim=True) - 1)
-    masked = residues & (torch.rand(valid.shape, device=valid.device) < self.sequence_mask_probability)
-    return input_ids.masked_fill(masked, self.sequence_mask_token_id)
-
   def encode_shared_tokens(self, input_ids, attention_mask, precomputed_embeddings=None):
-    if self.training and self.sequence_mask_probability > 0 and precomputed_embeddings is not None:
-      raise ValueError("Sequence masking requires live backbone encoding; training cannot use cached embeddings.")
     if precomputed_embeddings is None:
       if self.base is None:
         raise ValueError("A base model is required when precomputed embeddings are not provided.")
-      masked_ids = self._mask_sequence_tokens(input_ids, attention_mask)
       with torch.no_grad():
-        out = self.base(input_ids=masked_ids.long(), attention_mask=attention_mask.long())
+        out = self.base(input_ids=input_ids.long(), attention_mask=attention_mask.long())
       token_repr = out.last_hidden_state.to(dtype=self.adapter.norm.weight.dtype)
     else:
       token_repr = precomputed_embeddings.to(dtype=self.adapter.norm.weight.dtype)
-    if not torch.isfinite(token_repr).all():
-      raise FloatingPointError("Non-finite backbone embeddings detected before the adapter; check the embedding cache/input.")
     return token_repr + self.adapter(token_repr)
 
   def _pool_group(self, chain_embeddings, chain_to_sample, chain_to_group, batch_size: int, group_id: int):
@@ -280,9 +253,12 @@ class MultiTaskGroupPairModel(nn.Module):
       if sample_chains.shape[0] == 1:
         group_embeddings.append(sample_chains[0])
         continue
-      valid = torch.ones((1, sample_chains.shape[0]), device=sample_chains.device, dtype=torch.bool)
-      group_embeddings.append(self.group_pool(sample_chains.unsqueeze(0), valid).squeeze(0))
-    return torch.stack(group_embeddings)
+      pooled = self.group_pool(
+        sample_chains.unsqueeze(0),
+        torch.ones((1, sample_chains.shape[0]), dtype=torch.long, device=sample_chains.device),
+      ).squeeze(0)
+      group_embeddings.append(pooled)
+    return torch.stack(group_embeddings, dim=0)
 
   def _pair_features(self, group1_embeddings, group2_embeddings):
     return torch.cat(
@@ -294,32 +270,9 @@ class MultiTaskGroupPairModel(nn.Module):
       dim=-1,
     )
 
-  def _residue_dropout_mask(self, attention_mask):
-    """Exclude random residue vectors from training-time chain max pooling.
-
-    Current tokenization is right-padded <AA2fold>, amino-acid tokens, EOS.
-    Keep both special-token positions and padding semantics unchanged. Draw
-    independently per occurrence of a chain, retaining at least one residue
-    when all its residue positions would otherwise be dropped. Exclusion via
-    the pooling mask, rather than zeroing, also works for negative features.
-    This is embedding-level augmentation, not deletion from the backbone input.
-    """
-    valid = attention_mask.bool()
-    if not self.training or self.residue_dropout_probability == 0:
-      return valid
-    positions = torch.arange(valid.shape[1], device=valid.device).unsqueeze(0)
-    residues = valid & (positions > 0) & (positions < valid.sum(dim=1, keepdim=True) - 1)
-    draws = torch.rand(valid.shape, device=valid.device)
-    kept = valid & (~residues | (draws >= self.residue_dropout_probability))
-    needs_rescue = residues.any(dim=1) & ~(kept & residues).any(dim=1)
-    # The highest draw selects a random surviving residue when a chain loses all.
-    rescue_position = draws.masked_fill(~residues, -1).argmax(dim=1, keepdim=True)
-    return kept | ((positions == rescue_position) & needs_rescue.unsqueeze(1))
-
   def forward(self, input_ids, attention_mask, chain_to_sample, chain_to_group, batch_size, precomputed_embeddings=None):
     shared_tokens = self.encode_shared_tokens(input_ids, attention_mask, precomputed_embeddings=precomputed_embeddings)
-    pooling_mask = self._residue_dropout_mask(attention_mask)
-    chain_embeddings = self.residue_pool(shared_tokens, pooling_mask)
+    chain_embeddings = self.residue_pool(shared_tokens, attention_mask)
     group1_embeddings = self._pool_group(chain_embeddings, chain_to_sample, chain_to_group, batch_size, group_id=0)
     group2_embeddings = self._pool_group(chain_embeddings, chain_to_sample, chain_to_group, batch_size, group_id=1)
     pair_hidden = self.pair_mlp(self._pair_features(group1_embeddings, group2_embeddings))

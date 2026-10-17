@@ -154,10 +154,6 @@ class CheckpointWorkflowTests(unittest.TestCase):
     loss.backward()
     self.assertTrue(torch.isfinite(left.grad).all())
     self.assertTrue(torch.isfinite(right.grad).all())
-    ids = torch.tensor([[1, 2, 3]])
-    self.model.eval()
-    with self.assertRaisesRegex(FloatingPointError, "Non-finite backbone embeddings"):
-      self.model.encode_shared_tokens(ids, torch.ones_like(ids), torch.full((1, 3, 8), float("nan")))
 
   def test_atomic_save_failure_preserves_metrics(self):
     original = self.metrics_path.read_bytes()
@@ -167,55 +163,17 @@ class CheckpointWorkflowTests(unittest.TestCase):
     self.assertEqual(self.metrics_path.read_bytes(), original)
     self.assertFalse(list(self.directory.glob(".*.tmp")))
 
-  def test_residue_dropout_preserves_special_tokens_and_a_residue(self):
-    self.model.train()
-    self.model.residue_dropout_probability = 0.1
-    valid = torch.tensor([[1, 1, 1, 1, 1, 0], [1, 1, 1, 0, 0, 0]])
-    draws = torch.tensor([[0.9, 0.02, 0.03, 0.04, 0.9, 0.9], [0.9, 0.01, 0.9, 0.9, 0.9, 0.9]])
-    with patch("model.torch.rand", return_value=draws):
-      kept = self.model._residue_dropout_mask(valid)
-    torch.testing.assert_close(kept, torch.tensor([
-      [True, False, False, True, True, False], [True, True, True, False, False, False],
-    ]))
-    # Dropped residue positions must not beat negative retained features as zeros would.
-    values = -torch.ones(2, 6, 8)
-    values[0, 1:3] = 10
-    pooled = self.model.residue_pool(values, kept)
-    torch.testing.assert_close(pooled, -torch.ones(2, 8))
-    self.model.eval()
-    with patch("model.torch.rand", side_effect=AssertionError("evaluation must not augment")):
-      torch.testing.assert_close(self.model._residue_dropout_mask(valid), valid.bool())
+  def test_nonfinite_cached_embeddings_fail_without_overwriting_metrics(self):
+    original = self.metrics_path.read_bytes()
+    bad_embeddings = {key: torch.full_like(value, float("nan")) for key, value in self.embeddings.items()}
+    with self.assertRaisesRegex(FloatingPointError, "Non-finite backbone embeddings"):
+      self.evaluate(model=self.model, embedding_cache=bad_embeddings)
+    self.assertEqual(self.metrics_path.read_bytes(), original)
 
-  def test_sequence_masking_is_training_only_and_preserves_token_boundaries(self):
+  def test_cached_training_backpropagates_through_adapter(self):
     self.model.train()
-    self.model.sequence_mask_probability = 0.1
-    self.model.sequence_mask_token_id = 23
-    ids = torch.tensor([[149, 3, 22, 10, 1, 0], [149, 3, 1, 0, 0, 0]])
-    original = ids.clone()
-    valid = ids.ne(0)
-    with patch("model.torch.rand", return_value=torch.zeros_like(ids, dtype=torch.float)):
-      masked = self.model._mask_sequence_tokens(ids, valid)
-    torch.testing.assert_close(ids, original)
-    torch.testing.assert_close(masked, torch.tensor([[149, 23, 23, 23, 1, 0], [149, 23, 1, 0, 0, 0]]))
-    with patch("model.torch.rand", side_effect=AssertionError("disabled residue dropout must not draw")):
-      torch.testing.assert_close(self.model._residue_dropout_mask(valid), valid)
-    with self.assertRaisesRegex(ValueError, "live backbone"):
-      self.model.encode_shared_tokens(ids, valid, torch.randn(2, 6, 8))
-    self.model.eval()
-    with patch("model.torch.rand", side_effect=AssertionError("evaluation must not mask")):
-      torch.testing.assert_close(self.model._mask_sequence_tokens(ids, valid), ids)
-
-  def test_disabled_augmentations_do_not_consume_rng_or_block_cached_training(self):
-    self.model.train()
-    self.assertEqual(self.model.sequence_mask_probability, 0.0)
-    self.assertEqual(self.model.residue_dropout_probability, 0.0)
-    ids = torch.tensor([[149, 3, 1]])
-    valid = torch.ones_like(ids)
-    with patch("model.torch.rand", side_effect=AssertionError("baseline must not augment")):
-      torch.testing.assert_close(self.model._mask_sequence_tokens(ids, valid), ids)
-      torch.testing.assert_close(self.model._residue_dropout_mask(valid), valid.bool())
-      embeddings = torch.randn(1, 3, 8)
-      result = self.model.encode_shared_tokens(None, valid, embeddings)
+    embeddings = torch.randn(1, 3, 8)
+    result = self.model.encode_shared_tokens(None, torch.ones(1, 3), embeddings)
     result.square().mean().backward()
     self.assertTrue(torch.isfinite(result).all())
     self.assertIsNotNone(self.model.adapter.scale.grad)

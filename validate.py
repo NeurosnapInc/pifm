@@ -225,7 +225,6 @@ def evaluate_run(run_path, cache_path=DEFAULT_CACHE_PATH, splits=("validation", 
       adapter_dim=checkpoint["config"].get("adapter_dim", ADAPTER_DIM),
       dropout=checkpoint["config"].get("dropout", DROPOUT),
       classification_head_hidden=checkpoint["config"].get("classification_head_hidden", CLASSIFICATION_HEAD_HIDDEN),
-      sequence_mask_token_id=checkpoint["config"].get("sequence_mask_token_id"),
     ).to(DEVICE)
 
     model.adapter.load_state_dict(checkpoint["adapter_state_dict"])
@@ -290,6 +289,8 @@ def _evaluate_split(model, payload, embedding_cache, checkpoint, checkpoint_path
         input_ids = input_ids.to(DEVICE, non_blocking=PIN_MEMORY)
       if input_embeddings is not None:
         input_embeddings = input_embeddings.to(DEVICE, non_blocking=PIN_MEMORY)
+        if not torch.isfinite(input_embeddings).all():
+          raise FloatingPointError(f"Non-finite backbone embeddings during split={split!r}; check the embedding cache/input.")
       attn_mask = attn_mask.to(DEVICE, non_blocking=PIN_MEMORY)
       chain_to_sample = chain_to_sample.to(DEVICE, non_blocking=PIN_MEMORY)
       chain_to_group = chain_to_group.to(DEVICE, non_blocking=PIN_MEMORY)
