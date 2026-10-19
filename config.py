@@ -2,7 +2,7 @@ from pathlib import Path
 
 ### Backbone
 MODEL_NAME = "Rostlab/ProstT5"
-GLOBAL_SEED = 67
+GLOBAL_SEED = 1
 RUNS_DIR = Path("runs")
 
 ### Aggregation
@@ -40,7 +40,7 @@ EPOCHS = 10
 WEIGHT_DECAY = 1e-2
 WARMUP_RATIO = 0.05
 PATIENCE = 3
-TRAINING_SEED = GLOBAL_SEED
+TRAINING_SEED = GLOBAL_SEED + 26
 BATCH_SAMPLER_SEED = GLOBAL_SEED
 
 ### Early Stopping / Checkpoint Selection
