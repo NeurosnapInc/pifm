@@ -2,6 +2,10 @@
 
 Migrated from `prostt5_group_pair_adapter_best_2026-07-18_seed_1.pt`. Legacy dates without a time remain date-only.
 
+## Saved Results
+
+Validation and test results are stored in [metrics.json](metrics.json) under `["splits"]["validation"]` and `["splits"]["test"]`. Legacy tables are preserved in each split's `historical_reports`.
+
 ### Version 2026-07-18
 #### Changes
 - Added negative-aware interaction training to address the previous failure mode where the model ranked interactions well but predicted almost everything as positive.

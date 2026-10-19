@@ -2,6 +2,10 @@
 
 Migrated from `prostt5_group_pair_adapter_best_2026-07-19_seed_1.pt`. Legacy dates without a time remain date-only.
 
+## Saved Results
+
+Validation and test results are stored in [metrics.json](metrics.json) under `["splits"]["validation"]` and `["splits"]["test"]`. Legacy tables are preserved in each split's `historical_reports`.
+
 ### Version 2026-07-19
 #### Changes
 - Kept the negative-aware interaction setup from the previous run: focal interaction loss, source-balanced sampling, and capped positive:negative sampling.

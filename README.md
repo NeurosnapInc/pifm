@@ -400,119 +400,14 @@ Although the machine learning architecture is substantially different, the overa
 
 
 ## Train Log
-All historical result tables are stored in each run\'s `metrics.json`; original result notes live in `notes.md`. Use `python summarize_runs.py` to compare runs, `--historical` to print archived tables and notes, or `--json` to inspect all metadata. Compatible classification reports use the current evaluation fields; older classification and regression tables live in each split\'s `historical_reports`, with original columns, structured rows, and verbatim tables. Imported reports retain published four-decimal precision and README provenance. Undefined values are null, with original spelling preserved in verbatim tables. Historical definitions remain unchanged, and re-evaluation preserves the archives.
+Historical changes, rationale, and result summaries live in each run's `notes.md`; validation/test metrics live in `metrics.json`. Legacy tables retain their original columns, precision, and provenance in each split's `historical_reports`. Missing or undefined values are not reconstructed.
 
-### Version 2026-07-13
-#### Changes
-- Switched tokenization from a random row split to a cluster-disjoint split to reduce sequence/homology leakage across train, validation, and test.
-- Replaced naive random cluster assignment with label-aware greedy split assignment over connected cluster components. The splitter now balances total samples, interaction positives, interaction negatives, affinity-labeled samples, and source counts where possible.
-- Standardized affinity labels to `pKd` in the aggregated DuckDB/tokenized cache so regression targets are comparable across PPB-Affinity, SKEMPI, and user-provided affinity sources.
-- Updated training checkpoint selection to avoid early stopping on misleading aggregate `F1`/`MAE`. Classification selection now uses `AUROC` by default, regression uses normalized `MAE`, and tasks with too few validation labels are ignored for checkpoint selection.
-- Increased token-capped batch sizes for A100 training throughput.
+Use `python summarize_runs.py` to compare runs, `--historical` to print archived tables and notes, or `--json` to inspect all metadata. Re-evaluation preserves historical archives.
 
-#### Results
-- Validation affinity had moderate signal, while the interaction head still predicted almost everything as positive.
-
-#### Validation Split
-Results are stored in [metrics.json](runs/2026-07-13_seed_1/metrics.json) under `["splits"]["validation"]`. Historical tables are preserved in `historical_reports`.
-
-#### Test Split
-Results are stored in [metrics.json](runs/2026-07-13_seed_1/metrics.json) under `["splits"]["test"]`. Historical tables are preserved in `historical_reports`.
-
-### Version 2026-07-18
-#### Changes
-- Added negative-aware interaction training to address the previous failure mode where the model ranked interactions well but predicted almost everything as positive.
-- Switched the interaction loss from weighted cross-entropy to configurable focal loss (`INTERACTION_LOSS = "focal"`, `FOCAL_GAMMA = 2.0`).
-- Added weighted sampling controls so each epoch sees a less extreme interaction class balance (`INTERACTION_POS_NEG_RATIO = 5.0`) instead of reflecting the raw positive-heavy dataset distribution.
-- Added source-balanced sampling so high-volume sources do not dominate every training epoch.
-- Switched affinity regression from MSE to Huber loss for more robustness to noisy/outlier pKd labels.
-- Added source-normalized affinity training/reporting to test whether PPB-Affinity and SKEMPI should be normalized separately before regression.
-#### Results
-- Negative-aware training improved interaction classification and Negatome handling. Source-normalized affinity training remained weak; retain the interaction changes and revisit affinity modeling.
-
-#### Validation Split
-Results are stored in [metrics.json](runs/2026-07-18_seed_1/metrics.json) under `["splits"]["validation"]`. Historical tables are preserved in `historical_reports`.
-
-#### Test Split
-Results are stored in [metrics.json](runs/2026-07-18_seed_1/metrics.json) under `["splits"]["test"]`. Historical tables are preserved in `historical_reports`.
-
-### Version 2026-07-19
-#### Changes
-- Kept the negative-aware interaction setup from the previous run: focal interaction loss, source-balanced sampling, and capped positive:negative sampling.
-- Kept Huber loss for affinity regression (`REGRESSION_LOSS = "huber"`).
-- Reverted affinity normalization from source-normalized pKd back to global pKd normalization (`AFFINITY_NORMALIZATION = "global"`) after the 2026-07-18 run showed weak source-normalized affinity performance.
-
-#### Results
-- Interaction classification improved with calibrated thresholding. Global affinity normalization did not recover test performance; separate source-specific modeling or data/split investigation was needed.
-
-#### Validation Split
-Results are stored in [metrics.json](runs/2026-07-19_seed_1/metrics.json) under `["splits"]["validation"]`. Historical tables are preserved in `historical_reports`.
-
-#### Test Split
-Results are stored in [metrics.json](runs/2026-07-19_seed_1/metrics.json) under `["splits"]["test"]`. Historical tables are preserved in `historical_reports`.
-
-### Version 2026-08-12
-#### Changes
-- Stopped treating affinity as one shared regression task for the next experiment.
-- Added configurable affinity task construction with `AFFINITY_TASK_MODE = "source_specific"` and `AFFINITY_SOURCE_TASKS = ("ppb_affinity", "skempi")`.
-- Tokenization now emits separate source-specific affinity regression heads:
-  - `affinity_ppb_affinity`
-  - `affinity_skempi`
-- Kept the interaction head shared so the classifier still learns from all interaction-labeled sources.
-- Kept global pKd normalization and Huber regression loss for this run (`AFFINITY_NORMALIZATION = "global"`, `REGRESSION_LOSS = "huber"`).
-- Training checkpoints now record the affinity task mode and configured affinity sources.
-- Source-normalized regression utilities now identify affinity tasks via metadata, not only the old literal `affinity` task name.
-
-#### Rationale
-- The 2026-07-19 run showed that interaction classification is now useful after negative-aware training, but affinity regression remained weak on the test split.
-- PPB-Affinity and SKEMPI appear to behave differently enough that one shared affinity head is likely underfitting source-specific label structure.
-- This change isolates PPB and SKEMPI affinity prediction at the head level while preserving the same frozen ProstT5 encoder, adapter, group pooling, and pair representation.
-
-```bash
-python tokenize_data.py
-python cache_embeddings.py
-python train.py
-```
-
-#### Results
-- Interaction performance remained strong. Separate affinity heads helped SKEMPI on validation but failed to generalize on test; PPB-Affinity remained weak.
-
-#### Validation Split
-Results are stored in [metrics.json](runs/2026-08-12_seed_1/metrics.json) under `["splits"]["validation"]`. Historical tables are preserved in `historical_reports`.
-
-#### Test Split
-Results are stored in [metrics.json](runs/2026-08-12_seed_1/metrics.json) under `["splits"]["test"]`. Historical tables are preserved in `historical_reports`.
-
-### Version 2026-08-13
-#### Changes
-- Removed affinity regression from the downstream ML path to create a simpler interaction-only baseline.
-- Kept affinity values in aggregation/source loading where available, but tokenization now emits only the `interaction` task.
-- Simplified training to a single binary interaction head with the existing frozen ProstT5 + adapter architecture.
-- Simplified validation/calibration to classification-only reports: aggregate interaction metrics, source-specific interaction metrics, confusion counts, specificity, MCC, AUROC, AUPRC, and threshold calibration.
-- Removed downstream regression config knobs, regression heads, affinity task construction, source-normalized regression reporting, and post-hoc regression calibration.
-- Renamed cache outputs to avoid accidentally reusing stale multitask caches:
-  - `data/tokenized/interaction_group_pair_prostt5_tokens.pt`
-  - `data/tokenized/interaction_prostt5_backbone_embeddings.pt`
-
-#### Rationale
-- The 2026-08-12 source-specific affinity experiment confirmed that interaction classification is useful, but affinity regression did not generalize on the test split.
-- Removing affinity downstream makes this the clean baseline before testing cheaper architecture ablations such as residue-to-chain and group pooling strategies.
-
-#### Next Run
-```bash
-python tokenize_data.py
-python cache_embeddings.py
-python train.py
-```
-
-#### Results
-- Validation classification remained reasonable after removing downstream affinity.
-- Test classification was weaker than the 2026-08-12 multitask/source-specific-affinity run.
-- Calibrating the threshold on validation did not recover test negative handling.
-- Main readout: removing affinity simplifies the code and creates the intended clean baseline, but the interaction-only run has worse test negative recall than the previous setup. The next pooling ablations should be compared against this baseline, not assumed to improve it.
-
-#### Validation Split
-Classification metrics are stored in [metrics.json](runs/2026-08-13_seed_1/metrics.json) under `["splits"]["validation"]`.
-
-#### Test Split
-Classification metrics are stored in [metrics.json](runs/2026-08-13_seed_1/metrics.json) under `["splits"]["test"]`.
+| Version | Changes and Results | Validation / Test Metrics |
+| --- | --- | --- |
+| 2026-07-13 | [notes.md](runs/2026-07-13_seed_1/notes.md) | [metrics.json](runs/2026-07-13_seed_1/metrics.json) |
+| 2026-07-18 | [notes.md](runs/2026-07-18_seed_1/notes.md) | [metrics.json](runs/2026-07-18_seed_1/metrics.json) |
+| 2026-07-19 | [notes.md](runs/2026-07-19_seed_1/notes.md) | [metrics.json](runs/2026-07-19_seed_1/metrics.json) |
+| 2026-08-12 | [notes.md](runs/2026-08-12_seed_1/notes.md) | [metrics.json](runs/2026-08-12_seed_1/metrics.json) |
+| 2026-08-13 | [notes.md](runs/2026-08-13_seed_1/notes.md) | [metrics.json](runs/2026-08-13_seed_1/metrics.json) |

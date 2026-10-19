@@ -2,6 +2,10 @@
 
 Migrated from `prostt5_group_pair_adapter_best_2026-08-13_seed_1.pt`. Legacy dates without a time remain date-only.
 
+## Saved Results
+
+Validation and test results are stored in [metrics.json](metrics.json) under `["splits"]["validation"]` and `["splits"]["test"]`.
+
 ### Version 2026-08-13
 #### Changes
 - Removed affinity regression from the downstream ML path to create a simpler interaction-only baseline.
