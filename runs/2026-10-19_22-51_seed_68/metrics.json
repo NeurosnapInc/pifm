@@ -1,0 +1,360 @@
+{
+  "schema_version": 1,
+  "splits": {
+    "validation": {
+      "evaluated_at": "2026-10-20T00:42:43+00:00",
+      "cache_path": "/root/pifm/data/tokenized/interaction_group_pair_prostt5_tokens.pt",
+      "batch_size": 8,
+      "max_tokens_per_batch": 65536,
+      "dataset_size": 1614,
+      "classification": {
+        "interaction": {
+          "n": 1614,
+          "acc": 0.8283767038413878,
+          "balanced_acc": 0.8461293911937688,
+          "precision": 0.9762107051826678,
+          "recall": 0.8218884120171673,
+          "specificity": 0.8703703703703703,
+          "negative_recall": 0.8703703703703703,
+          "f1": 0.8924271844660194,
+          "mcc": 0.5304201152116612,
+          "tn": 188,
+          "fp": 28,
+          "fn": 249,
+          "tp": 1149,
+          "label_ratio": "0:0.134 1:0.866",
+          "pred_ratio": "0:0.271 1:0.729",
+          "auroc": 0.9105981428495735,
+          "auprc": 0.9775398582886191
+        }
+      },
+      "by_source": {
+        "intact_positive": {
+          "interaction": {
+            "n": 24,
+            "acc": 0.20833333333333334,
+            "balanced_acc": 0.20833333333333334,
+            "precision": 1.0,
+            "recall": 0.20833333333333334,
+            "specificity": null,
+            "negative_recall": null,
+            "f1": 0.3448275862068966,
+            "mcc": 0.0,
+            "tn": 0,
+            "fp": 0,
+            "fn": 19,
+            "tp": 5,
+            "label_ratio": "1:1.000",
+            "pred_ratio": "0:0.792 1:0.208",
+            "auroc": null,
+            "auprc": 1.0
+          }
+        },
+        "negatome": {
+          "interaction": {
+            "n": 216,
+            "acc": 0.8703703703703703,
+            "balanced_acc": 0.4351851851851852,
+            "precision": 0.0,
+            "recall": 0.0,
+            "specificity": 0.8703703703703703,
+            "negative_recall": 0.8703703703703703,
+            "f1": 0.0,
+            "mcc": 0.0,
+            "tn": 188,
+            "fp": 28,
+            "fn": 0,
+            "tp": 0,
+            "label_ratio": "0:1.000",
+            "pred_ratio": "0:0.870 1:0.130",
+            "auroc": null,
+            "auprc": 0.0
+          }
+        },
+        "ppb_affinity": {
+          "interaction": {
+            "n": 754,
+            "acc": 0.8554376657824934,
+            "balanced_acc": 0.8554376657824934,
+            "precision": 1.0,
+            "recall": 0.8554376657824934,
+            "specificity": null,
+            "negative_recall": null,
+            "f1": 0.9220872051465332,
+            "mcc": 0.0,
+            "tn": 0,
+            "fp": 0,
+            "fn": 109,
+            "tp": 645,
+            "label_ratio": "1:1.000",
+            "pred_ratio": "0:0.145 1:0.855",
+            "auroc": null,
+            "auprc": 1.0
+          }
+        },
+        "skempi": {
+          "interaction": {
+            "n": 304,
+            "acc": 0.8782894736842105,
+            "balanced_acc": 0.8782894736842105,
+            "precision": 1.0,
+            "recall": 0.8782894736842105,
+            "specificity": null,
+            "negative_recall": null,
+            "f1": 0.9352014010507881,
+            "mcc": 0.0,
+            "tn": 0,
+            "fp": 0,
+            "fn": 37,
+            "tp": 267,
+            "label_ratio": "1:1.000",
+            "pred_ratio": "0:0.122 1:0.878",
+            "auroc": null,
+            "auprc": 1.0
+          }
+        },
+        "string": {
+          "interaction": {
+            "n": 316,
+            "acc": 0.7341772151898734,
+            "balanced_acc": 0.7341772151898734,
+            "precision": 1.0,
+            "recall": 0.7341772151898734,
+            "specificity": null,
+            "negative_recall": null,
+            "f1": 0.8467153284671532,
+            "mcc": 0.0,
+            "tn": 0,
+            "fp": 0,
+            "fn": 84,
+            "tp": 232,
+            "label_ratio": "1:1.000",
+            "pred_ratio": "0:0.266 1:0.734",
+            "auroc": null,
+            "auprc": 1.0
+          }
+        }
+      },
+      "calibrated_classification": {
+        "interaction": {
+          "n": 1614,
+          "threshold": 0.05,
+          "calibration_size": 1614,
+          "calibration_split": "validation",
+          "acc": 0.9132589838909542,
+          "balanced_acc": 0.8501132570338579,
+          "precision": 0.9625,
+          "recall": 0.9363376251788269,
+          "specificity": 0.7638888888888888,
+          "negative_recall": 0.7638888888888888,
+          "f1": 0.949238578680203,
+          "mcc": 0.6546854665688921,
+          "tn": 165,
+          "fp": 51,
+          "fn": 89,
+          "tp": 1309,
+          "label_ratio": "0:0.134 1:0.866",
+          "pred_ratio": "0:0.157 1:0.843",
+          "auroc": 0.9105981428495735,
+          "auprc": 0.9775398582886191
+        }
+      }
+    },
+    "test": {
+      "evaluated_at": "2026-10-20T00:42:52+00:00",
+      "cache_path": "/root/pifm/data/tokenized/interaction_group_pair_prostt5_tokens.pt",
+      "batch_size": 8,
+      "max_tokens_per_batch": 65536,
+      "dataset_size": 1615,
+      "classification": {
+        "interaction": {
+          "n": 1615,
+          "acc": 0.8402476780185758,
+          "balanced_acc": 0.8314520292272258,
+          "precision": 0.9680065627563577,
+          "recall": 0.8434596140100071,
+          "specificity": 0.8194444444444444,
+          "negative_recall": 0.8194444444444444,
+          "f1": 0.9014514896867838,
+          "mcc": 0.5244897012665265,
+          "tn": 177,
+          "fp": 39,
+          "fn": 219,
+          "tp": 1180,
+          "label_ratio": "0:0.134 1:0.866",
+          "pred_ratio": "0:0.245 1:0.755",
+          "auroc": 0.9043579408572259,
+          "auprc": 0.9789254099241474
+        }
+      },
+      "by_source": {
+        "intact_negative": {
+          "interaction": {
+            "n": 1,
+            "acc": 1.0,
+            "balanced_acc": 0.5,
+            "precision": 0.0,
+            "recall": 0.0,
+            "specificity": 1.0,
+            "negative_recall": 1.0,
+            "f1": 0.0,
+            "mcc": 0.0,
+            "tn": 1,
+            "fp": 0,
+            "fn": 0,
+            "tp": 0,
+            "label_ratio": "0:1.000",
+            "pred_ratio": "0:1.000",
+            "auroc": null,
+            "auprc": 0.0
+          }
+        },
+        "intact_positive": {
+          "interaction": {
+            "n": 25,
+            "acc": 0.16,
+            "balanced_acc": 0.16,
+            "precision": 1.0,
+            "recall": 0.16,
+            "specificity": null,
+            "negative_recall": null,
+            "f1": 0.27586206896551724,
+            "mcc": 0.0,
+            "tn": 0,
+            "fp": 0,
+            "fn": 21,
+            "tp": 4,
+            "label_ratio": "1:1.000",
+            "pred_ratio": "0:0.840 1:0.160",
+            "auroc": null,
+            "auprc": 1.0
+          }
+        },
+        "negatome": {
+          "interaction": {
+            "n": 215,
+            "acc": 0.8186046511627907,
+            "balanced_acc": 0.40930232558139534,
+            "precision": 0.0,
+            "recall": 0.0,
+            "specificity": 0.8186046511627907,
+            "negative_recall": 0.8186046511627907,
+            "f1": 0.0,
+            "mcc": 0.0,
+            "tn": 176,
+            "fp": 39,
+            "fn": 0,
+            "tp": 0,
+            "label_ratio": "0:1.000",
+            "pred_ratio": "0:0.819 1:0.181",
+            "auroc": null,
+            "auprc": 0.0
+          }
+        },
+        "ppb_affinity": {
+          "interaction": {
+            "n": 755,
+            "acc": 0.8821192052980132,
+            "balanced_acc": 0.8821192052980132,
+            "precision": 1.0,
+            "recall": 0.8821192052980132,
+            "specificity": null,
+            "negative_recall": null,
+            "f1": 0.9373680506685432,
+            "mcc": 0.0,
+            "tn": 0,
+            "fp": 0,
+            "fn": 89,
+            "tp": 666,
+            "label_ratio": "1:1.000",
+            "pred_ratio": "0:0.118 1:0.882",
+            "auroc": null,
+            "auprc": 1.0
+          }
+        },
+        "skempi": {
+          "interaction": {
+            "n": 302,
+            "acc": 0.9834437086092715,
+            "balanced_acc": 0.9834437086092715,
+            "precision": 1.0,
+            "recall": 0.9834437086092715,
+            "specificity": null,
+            "negative_recall": null,
+            "f1": 0.991652754590985,
+            "mcc": 0.0,
+            "tn": 0,
+            "fp": 0,
+            "fn": 5,
+            "tp": 297,
+            "label_ratio": "1:1.000",
+            "pred_ratio": "0:0.017 1:0.983",
+            "auroc": null,
+            "auprc": 1.0
+          }
+        },
+        "string": {
+          "interaction": {
+            "n": 317,
+            "acc": 0.6719242902208202,
+            "balanced_acc": 0.6719242902208202,
+            "precision": 1.0,
+            "recall": 0.6719242902208202,
+            "specificity": null,
+            "negative_recall": null,
+            "f1": 0.8037735849056604,
+            "mcc": 0.0,
+            "tn": 0,
+            "fp": 0,
+            "fn": 104,
+            "tp": 213,
+            "label_ratio": "1:1.000",
+            "pred_ratio": "0:0.328 1:0.672",
+            "auroc": null,
+            "auprc": 1.0
+          }
+        }
+      },
+      "calibrated_classification": {
+        "interaction": {
+          "n": 1615,
+          "threshold": 0.05,
+          "calibration_size": 1614,
+          "calibration_split": "validation",
+          "acc": 0.9040247678018576,
+          "balanced_acc": 0.8134563709527969,
+          "precision": 0.951378809869376,
+          "recall": 0.9370979270907791,
+          "specificity": 0.6898148148148148,
+          "negative_recall": 0.6898148148148148,
+          "f1": 0.9441843716240548,
+          "mcc": 0.6030371226830096,
+          "tn": 149,
+          "fp": 67,
+          "fn": 88,
+          "tp": 1311,
+          "label_ratio": "0:0.134 1:0.866",
+          "pred_ratio": "0:0.147 1:0.853",
+          "auroc": 0.9043579408572259,
+          "auprc": 0.9789254099241474
+        }
+      }
+    }
+  },
+  "training": {
+    "best_selection_metric": 0.9105782731945108,
+    "best_task_report": {
+      "acc": 0.8283767038413878,
+      "balanced_accuracy": 0.8461293911937688,
+      "specificity": 0.8703703703703703,
+      "negative_recall": 0.8703703703703703,
+      "mcc": 0.5304201152116612,
+      "f1": 0.8924271844660194,
+      "auroc": 0.9105782731945108,
+      "tn": 188,
+      "fp": 28,
+      "fn": 249,
+      "tp": 1149
+    }
+  }
+}
