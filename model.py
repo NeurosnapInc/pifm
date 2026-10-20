@@ -52,6 +52,12 @@ class MultiTaskGroupPairDataset(Dataset):
         "length": int(length),
         "source": split_payload.get("sources", ["unknown"] * len(split_payload["lengths"]))[idx],
       }
+      if "affinity_pkd" in split_payload:
+        # Keep task_order interaction-only; the extra column is training supervision.
+        affinity = split_payload["affinity_pkd"][idx].reshape(1)
+        sample["raw_labels"] = torch.cat([sample["raw_labels"], affinity])
+        sample["normalized_labels"] = torch.cat([sample["normalized_labels"], affinity])
+        sample["label_mask"] = torch.cat([sample["label_mask"], split_payload["affinity_mask"][idx].reshape(1)])
       if embedding_cache is not None:
         sample["group1_embeddings"] = [embedding_cache[token_ids_key(ids)] for ids in group1_input_ids]
         sample["group2_embeddings"] = [embedding_cache[token_ids_key(ids)] for ids in group2_input_ids]
@@ -202,6 +208,7 @@ class MultiTaskGroupPairModel(nn.Module):
     adapter_dim=ADAPTER_DIM,
     dropout=DROPOUT,
     classification_head_hidden=CLASSIFICATION_HEAD_HIDDEN,
+    auxiliary_affinity=False,
   ):
     super().__init__()
     self.base = base_model
@@ -223,6 +230,12 @@ class MultiTaskGroupPairModel(nn.Module):
 
     for task_name in task_order:
       self.heads[task_name] = PairTaskHead(PAIR_MLP_HIDDEN, task_output_dims[task_name], classification_head_hidden, dropout=dropout)
+    self.auxiliary_affinity_head = None
+    if auxiliary_affinity:
+      # Preserve classifier initialization/dropout RNG for matched-seed ablations.
+      # No extra dropout: this head must not introduce additional random draws.
+      with torch.random.fork_rng(devices=[]):
+        self.auxiliary_affinity_head = nn.Linear(PAIR_MLP_HIDDEN, 1)
 
   def train(self, mode=True):
     """Train the adapter/heads without enabling dropout in the frozen backbone."""
@@ -276,10 +289,13 @@ class MultiTaskGroupPairModel(nn.Module):
     group1_embeddings = self._pool_group(chain_embeddings, chain_to_sample, chain_to_group, batch_size, group_id=0)
     group2_embeddings = self._pool_group(chain_embeddings, chain_to_sample, chain_to_group, batch_size, group_id=1)
     pair_hidden = self.pair_mlp(self._pair_features(group1_embeddings, group2_embeddings))
-    return {
+    outputs = {
       task_name: head(pair_hidden)
       for task_name, head in self.heads.items()
     }
+    if self.auxiliary_affinity_head is not None:
+      outputs["auxiliary_affinity"] = self.auxiliary_affinity_head(pair_hidden).squeeze(-1)
+    return outputs
 
 
 def unwrap_model(model):

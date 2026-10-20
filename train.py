@@ -20,6 +20,7 @@ from tqdm import tqdm
 from transformers import T5EncoderModel, get_linear_schedule_with_warmup
 
 from calibration import fit_posthoc_calibration
+from auxiliary_affinity import affinity_statistics, masked_affinity_loss
 from run_utils import create_run_directory, git_revision, save_run
 import config as run_configuration
 from config import (
@@ -63,6 +64,7 @@ COMPILE_MODEL = DEVICE.type == "cuda"
 PIN_MEMORY = DEVICE.type == "cuda"
 USE_FUSED_ADAMW = DEVICE.type == "cuda"
 TASK_NAME = "interaction"
+AUXILIARY_AFFINITY_WEIGHT = 0.1
 
 
 class FocalCrossEntropyLoss(nn.Module):
@@ -275,6 +277,9 @@ if task_order != [TASK_NAME]:
 
 train_split = payload["splits"]["train"]
 val_split = payload["splits"]["validation"]
+affinity_normalization = affinity_statistics(train_split)
+print(f"Auxiliary affinity: train n={affinity_normalization['n']} mean={affinity_normalization['mean']:.4f} "
+      f"std={affinity_normalization['std']:.4f} pKd; Huber weight={AUXILIARY_AFFINITY_WEIGHT}")
 pad_token_id = payload["config"]["pad_token_id"]
 task_idx = task_order.index(TASK_NAME)
 
@@ -342,6 +347,7 @@ model = MultiTaskGroupPairModel(
   adapter_dim=ADAPTER_DIM,
   dropout=DROPOUT,
   classification_head_hidden=CLASSIFICATION_HEAD_HIDDEN,
+  auxiliary_affinity=True,
 ).to(DEVICE)
 
 if COMPILE_MODEL and hasattr(torch, "compile"):
@@ -359,6 +365,7 @@ optimizer = torch.optim.AdamW(
     {"params": model_ref.group_pool.parameters()},
     {"params": model_ref.pair_mlp.parameters()},
     {"params": model_ref.heads.parameters()},
+    {"params": model_ref.auxiliary_affinity_head.parameters()},
   ],
   lr=LR,
   weight_decay=WEIGHT_DECAY,
@@ -370,6 +377,7 @@ trainable_params = (
   + list(model_ref.group_pool.parameters())
   + list(model_ref.pair_mlp.parameters())
   + list(model_ref.heads.parameters())
+  + list(model_ref.auxiliary_affinity_head.parameters())
 )
 
 num_training_steps = len(train_loader) * EPOCHS
@@ -386,6 +394,7 @@ def _save_current_best(model_ref, best_state, calibration, run_dir, saved_at):
       "group_pool_state_dict": model_ref.group_pool.state_dict(),
       "pair_mlp_state_dict": model_ref.pair_mlp.state_dict(),
       "head_state_dicts": {task_name: head.state_dict() for task_name, head in model_ref.heads.items()},
+      "auxiliary_affinity_state_dict": model_ref.auxiliary_affinity_head.state_dict(),
       "config": {
         "git_commit": git_revision(),
         "execution": {
@@ -415,6 +424,13 @@ def _save_current_best(model_ref, best_state, calibration, run_dir, saved_at):
         "residue_pooling": "max",
         "group_pooling": "mean",
         "data_augmentation": "none",
+        "auxiliary_affinity": {
+          "head": "shared_linear", "loss": "huber", "delta": 1.0,
+          "weight": AUXILIARY_AFFINITY_WEIGHT,
+          "normalization": affinity_normalization,
+          "training_only": True, "used_for_selection": False,
+          "target": "-log10(Kd in mol/L)",
+        },
         "dropout": DROPOUT,
         "classification_head_hidden": CLASSIFICATION_HEAD_HIDDEN,
         "model_name": MODEL_NAME,
@@ -453,7 +469,12 @@ def _save_current_best(model_ref, best_state, calibration, run_dir, saved_at):
       "The frozen backbone stays in evaluation mode and is encoded without gradients.\n"
       f"Token budgets: train {TRAIN_MAX_TOKENS_PER_BATCH}, evaluation {EVAL_MAX_TOKENS_PER_BATCH}.\n"
       "Original cached-baseline token budgets are restored.\n"
-      "Historical class-weighted focal loss only (gamma 2, exp(-weighted CE), batch mean).\n"
+      "Interaction loss: historical class-weighted focal (gamma 2, exp(-weighted CE), batch mean).\n"
+      "Auxiliary experiment: one shared linear affinity head on the pair representation.\n"
+      "Total loss = interaction focal + 0.1 * masked Huber (delta 1) on train-standardized pKd.\n"
+      "pKd is already -log10(Kd in mol/L); normalization uses observed train labels only.\n"
+      "Affinity gradients reach the shared representation; classifier selection/calibration are unchanged.\n"
+      "Affinity diagnostics are not a prediction objective or checkpoint-selection criterion.\n"
       "No LoRA or contrastive term; existing tokenized data is reused unchanged.\n"
       "CUDA compilation is enabled when available; numerical safeguards are retained.\n"
       "Non-finite inputs/logits/loss/gradients abort training.\n"
@@ -473,6 +494,10 @@ best_state = None
 for epoch in range(EPOCHS):
   model.train()
   total_loss = 0.0
+  total_interaction_loss = 0.0
+  total_affinity_loss = 0.0
+  observed_affinity = 0
+  batch_count = 0
 
   for batch_idx, batch in enumerate(tqdm(train_loader, desc=f"Epoch {epoch + 1}/{EPOCHS}"), start=1):
     with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=AMP_ENABLED):
@@ -482,7 +507,10 @@ for epoch in range(EPOCHS):
       if not torch.isfinite(logits).all():
         raise FloatingPointError(f"Non-finite training logits at epoch {epoch + 1}, batch {batch_idx}; sources={batch[-1]!r}.")
       targets = raw_labels[mask, task_idx].long()
-      loss = criterion(logits, targets)
+      interaction_loss = criterion(logits, targets)
+      affinity_mask = label_mask[:, 1]
+      auxiliary_loss = masked_affinity_loss(outputs["auxiliary_affinity"], raw_labels[:, 1], affinity_mask, affinity_normalization)
+      loss = interaction_loss + AUXILIARY_AFFINITY_WEIGHT * auxiliary_loss
 
     if not torch.isfinite(loss):
       raise FloatingPointError(f"Non-finite loss at epoch {epoch + 1}, batch {batch_idx}; optimizer not stepped.")
@@ -501,6 +529,11 @@ for epoch in range(EPOCHS):
     optimizer.step()
     scheduler.step()
     total_loss += loss.item()
+    total_interaction_loss += interaction_loss.item()
+    n_affinity = int(affinity_mask.sum().item())
+    total_affinity_loss += auxiliary_loss.item() * n_affinity
+    observed_affinity += n_affinity
+    batch_count += 1
 
   model.eval()
   val_predictions = {TASK_NAME: _collect_predictions(model, val_loader, task_idx)}
@@ -516,7 +549,8 @@ for epoch in range(EPOCHS):
   auroc_msg = "nan" if report["auroc"] is None else f"{report['auroc']:.4f}"
   specificity_msg = "nan" if report["specificity"] is None else f"{report['specificity']:.4f}"
   print(
-    f"Train Loss: {total_loss / len(train_loader):.4f} | Val "
+    f"Train Loss: {total_loss / batch_count:.4f} interaction={total_interaction_loss / batch_count:.4f} "
+    f"affinity_huber={total_affinity_loss / max(1, observed_affinity):.4f} affinity_n={observed_affinity} | Val "
     f"interaction:ACC={report['acc']:.4f} BAL_ACC={report['balanced_accuracy']:.4f} "
     f"SPEC={specificity_msg} MCC={report['mcc']:.4f} F1={report['f1']:.4f} AUROC={auroc_msg} "
     f"| Select {selection_metric_name}={selection_metric:.4f}"
@@ -532,6 +566,7 @@ for epoch in range(EPOCHS):
       "group_pool": {k: v.detach().cpu().clone() for k, v in model_ref.group_pool.state_dict().items()},
       "pair_mlp": {k: v.detach().cpu().clone() for k, v in model_ref.pair_mlp.state_dict().items()},
       "heads": {task_name: {k: v.detach().cpu().clone() for k, v in head.state_dict().items()} for task_name, head in model_ref.heads.items()},
+      "auxiliary_affinity": {k: v.detach().cpu().clone() for k, v in model_ref.auxiliary_affinity_head.state_dict().items()},
       "selection_metric": selection_metric,
       "task_report": report,
       "validation_predictions": val_predictions,
@@ -553,6 +588,7 @@ if best_state is not None:
   model_ref.pair_mlp.load_state_dict(best_state["pair_mlp"])
   for task_name, state_dict in best_state["heads"].items():
     model_ref.heads[task_name].load_state_dict(state_dict)
+  model_ref.auxiliary_affinity_head.load_state_dict(best_state["auxiliary_affinity"])
   calibration = fit_posthoc_calibration(best_state["validation_predictions"], task_metas, calibration_split="validation")
 else:
   calibration = None

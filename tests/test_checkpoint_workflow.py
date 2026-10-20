@@ -178,6 +178,31 @@ class CheckpointWorkflowTests(unittest.TestCase):
     self.assertTrue(torch.isfinite(result).all())
     self.assertIsNotNone(self.model.adapter.scale.grad)
 
+  def test_auxiliary_run_reload_and_source_diagnostics(self):
+    auxiliary = MultiTaskGroupPairModel(None, ["interaction"], {"interaction": 2}, 8,
+                                       adapter_dim=4, dropout=0.0, auxiliary_affinity=True)
+    auxiliary.load_state_dict(self.model.state_dict(), strict=False)
+    self.checkpoint["auxiliary_affinity_state_dict"] = auxiliary.auxiliary_affinity_head.state_dict()
+    self.checkpoint["config"]["auxiliary_affinity"] = {
+      "normalization": {"mean": 7.0, "std": 2.0, "fit_split": "train"},
+      "weight": 0.1, "used_for_selection": False,
+    }
+    for split in self.payload["splits"].values():
+      mask = split["raw_labels"][:, 0].bool()
+      split["affinity_mask"] = mask
+      split["affinity_pkd"] = torch.where(mask, 9.0, 0.0)
+    save_run(self.checkpoint, self.directory, overwrite=True)
+    with patch.object(validate, "_load_embedding_cache", return_value=self.embeddings):
+      loaded = self.evaluate()
+    reused = self.evaluate(model=auxiliary, embedding_cache=self.embeddings)
+    for split in ("validation", "test"):
+      self.assertEqual(loaded["splits"][split]["classification"], reused["splits"][split]["classification"])
+      diagnostic = loaded["splits"][split]["auxiliary_affinity"]
+      self.assertEqual(diagnostic["n"], 2)
+      self.assertEqual(diagnostic["units"], "pKd")
+      self.assertEqual(diagnostic["by_source"]["positive"]["n"], 2)
+      self.assertEqual(diagnostic, reused["splits"][split]["auxiliary_affinity"])
+
   def test_consecutive_best_saves_preserve_notes_and_invalidate_old_reports(self):
     from run_utils import load_run
 

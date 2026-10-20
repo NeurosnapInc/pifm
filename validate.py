@@ -16,6 +16,7 @@ from calibration import (
   apply_posthoc_calibration,
   classification_report,
 )
+from auxiliary_affinity import affinity_report
 from run_utils import load_run, save_json
 from config import (
   ADAPTER_DIM,
@@ -172,6 +173,10 @@ def evaluate_run(run_path, cache_path=DEFAULT_CACHE_PATH, splits=("validation", 
 
   print("Loading checkpoint and tokenized cache")
   run_dir, checkpoint = load_run(run_path)
+  auxiliary_config = checkpoint["config"].get("auxiliary_affinity")
+  auxiliary_state = checkpoint.get("auxiliary_affinity_state_dict")
+  if bool(auxiliary_config) != (auxiliary_state is not None):
+    raise ValueError("Auxiliary affinity metadata and head weights disagree.")
   architecture = checkpoint["config"].get("interaction_module")
   # The original winning run predates architecture metadata but has this exact model.
   original_winner = (architecture is None
@@ -225,6 +230,7 @@ def evaluate_run(run_path, cache_path=DEFAULT_CACHE_PATH, splits=("validation", 
       adapter_dim=checkpoint["config"].get("adapter_dim", ADAPTER_DIM),
       dropout=checkpoint["config"].get("dropout", DROPOUT),
       classification_head_hidden=checkpoint["config"].get("classification_head_hidden", CLASSIFICATION_HEAD_HIDDEN),
+      auxiliary_affinity=auxiliary_state is not None,
     ).to(DEVICE)
 
     model.adapter.load_state_dict(checkpoint["adapter_state_dict"])
@@ -233,6 +239,10 @@ def evaluate_run(run_path, cache_path=DEFAULT_CACHE_PATH, splits=("validation", 
     model.pair_mlp.load_state_dict(checkpoint["pair_mlp_state_dict"])
     for task_name, state_dict in checkpoint["head_state_dicts"].items():
       model.heads[task_name].load_state_dict(state_dict)
+    if auxiliary_state is not None:
+      model.auxiliary_affinity_head.load_state_dict(auxiliary_state)
+  if auxiliary_config and getattr(model, "auxiliary_affinity_head", None) is None:
+    raise ValueError("The reused model is missing this run's auxiliary affinity head.")
   model.eval()
 
   # Keep previous split reports when a caller explicitly evaluates only one split.
@@ -257,6 +267,8 @@ def evaluate_run(run_path, cache_path=DEFAULT_CACHE_PATH, splits=("validation", 
 def _evaluate_split(model, payload, embedding_cache, checkpoint, checkpoint_path, cache_path, split, batch_size):
   """Collect aggregate, source-specific, and checkpoint-calibrated metrics for one split."""
   split_payload = payload["splits"][split]
+  auxiliary_config = checkpoint["config"].get("auxiliary_affinity")
+  affinity_labels, affinity_predictions, affinity_sources = [], [], []
   pad_token_id = payload["config"]["pad_token_id"]
   task_metas = payload["task_metas"]
   task_idx = payload["task_order"].index(TASK_NAME)
@@ -307,6 +319,14 @@ def _evaluate_split(model, payload, embedding_cache, checkpoint, checkpoint_path
           precomputed_embeddings=input_embeddings,
         )
 
+      if auxiliary_config and raw_labels.shape[1] > 1:
+        observed = label_mask[:, 1]
+        stats = auxiliary_config["normalization"]
+        pkd_predictions = outputs["auxiliary_affinity"][observed].float() * stats["std"] + stats["mean"]
+        affinity_labels.extend(raw_labels[observed, 1].cpu().tolist())
+        affinity_predictions.extend(pkd_predictions.cpu().tolist())
+        affinity_sources.extend(source for source, keep in zip(sources, observed.cpu().tolist()) if keep)
+
       mask = label_mask[:, task_idx]
       if not mask.any():
         continue
@@ -355,6 +375,17 @@ def _evaluate_split(model, payload, embedding_cache, checkpoint, checkpoint_path
     "by_source": {},
     "calibrated_classification": {},
   }
+  if auxiliary_config:
+    if "affinity_pkd" in split_payload:
+      result["auxiliary_affinity"] = affinity_report(affinity_labels, affinity_predictions, affinity_sources)
+      diagnostics = result["auxiliary_affinity"]
+      rows = [["all", diagnostics["n"], *[_format_float(diagnostics[key]) for key in ("mae", "rmse", "pearson")]]]
+      rows.extend([source, values["n"], *[_format_float(values[key]) for key in ("mae", "rmse", "pearson")]]
+                  for source, values in diagnostics["by_source"].items())
+      print(_format_table("Auxiliary Affinity Diagnostics (pKd; not used for selection)",
+                          ["source", "n", "mae", "rmse", "pearson"], rows))
+    else:
+      result["auxiliary_affinity"] = {"available": False, "reason": "Evaluation cache lacks auxiliary pKd labels."}
 
   source_rows = []
   for source, source_values in sorted(predictions[TASK_NAME]["by_source"].items()):
