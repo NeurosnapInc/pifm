@@ -4,7 +4,6 @@ Pre-tokenize aggregated protein-pair interaction data into train/validation/test
 
 import csv
 import hashlib
-import math
 import random
 import re
 import shutil
@@ -15,8 +14,6 @@ from typing import Dict, List
 import duckdb
 import torch
 from transformers import T5Tokenizer
-
-from auxiliary_affinity import verify_classifier_cache
 
 from config import (
   AGGREGATED_DB_PATH,
@@ -382,8 +379,6 @@ def _build_tokenized_split(records, token_map):
   label_mask = []
   lengths = []
   sources = []
-  affinities = []
-  affinity_masks = []
 
   for record in records:
     group1_tensors = [token_map[sequence] for sequence in record["group1_sequences"]]
@@ -398,10 +393,6 @@ def _build_tokenized_split(records, token_map):
     label_mask.append(mask_tensor)
     lengths.append(sum(len(ids) for ids in group1_tensors + group2_tensors))
     sources.append(record["source"])
-    affinity = record.get("affinity_pkd")
-    observed = affinity is not None and math.isfinite(affinity)
-    affinities.append(float(affinity) if observed else 0.0)
-    affinity_masks.append(observed)
 
   if raw_labels:
     raw_labels_tensor = torch.stack(raw_labels)
@@ -422,8 +413,6 @@ def _build_tokenized_split(records, token_map):
     "label_mask": label_mask_tensor,
     "lengths": lengths_tensor,
     "sources": sources,
-    "affinity_pkd": torch.tensor(affinities, dtype=torch.float),
-    "affinity_mask": torch.tensor(affinity_masks, dtype=torch.bool),
   }
 
 
@@ -436,7 +425,7 @@ con = duckdb.connect(AGGREGATED_DB_PATH)
 try:
   sample_rows = con.execute(
     """
-    SELECT source, group1, group2, interaction_label, affinity_pkd
+    SELECT source, group1, group2, interaction_label
     FROM samples
     WHERE interaction_label IS NOT NULL
     ORDER BY group1, group2
@@ -447,7 +436,7 @@ try:
     raise ValueError(f"No interaction-labeled samples found in {AGGREGATED_DB_PATH}")
 
   records = []
-  for source, group1, group2, interaction_label, affinity_pkd in sample_rows:
+  for source, group1, group2, interaction_label in sample_rows:
     records.append(
       {
         "group1": group1,
@@ -457,8 +446,6 @@ try:
         "labels": [1.0 if float(interaction_label) > 0.5 else 0.0],
         "mask": [True],
         "source": source,
-        # Already -log10(Kd in mol/L); do not log-transform or convert units again.
-        "affinity_pkd": affinity_pkd,
       }
     )
 
@@ -486,33 +473,31 @@ try:
     for split_name, rows in split_records.items()
   }
 
-  payload = {
-    "task_order": TASK_ORDER,
-    "task_metas": TASK_METAS,
-    "config": {
-      "model_name": MODEL_NAME,
-      "db_path": str(AGGREGATED_DB_PATH),
-      "split_seed": SPLIT_SEED,
-      "split_strategy": SPLIT_STRATEGY,
-      "split_assignment": "label_aware_cluster_components" if SPLIT_STRATEGY in {"protein", "cluster"} else "random_rows",
-      "cluster_min_seq_id": CLUSTER_MIN_SEQ_ID if SPLIT_STRATEGY == "cluster" else None,
-      "cluster_coverage": CLUSTER_COVERAGE if SPLIT_STRATEGY == "cluster" else None,
-      "sequence_cluster_tsv_path": str(SEQUENCE_CLUSTER_TSV_PATH) if SPLIT_STRATEGY == "cluster" else None,
-      "dropped_cross_split": dropped_cross_split,
-      "train_fraction": TRAIN_FRACTION,
-      "val_fraction": VAL_FRACTION,
-      "test_fraction": TEST_FRACTION,
-      "max_length": MAX_LENGTH,
-      "pad_token_id": tokenizer.pad_token_id,
-      "cache_format": "interaction_group_pair_v1",
-      "auxiliary_affinity_units": "pKd",
+  torch.save(
+    {
+      "task_order": TASK_ORDER,
+      "task_metas": TASK_METAS,
+      "config": {
+        "model_name": MODEL_NAME,
+        "db_path": str(AGGREGATED_DB_PATH),
+        "split_seed": SPLIT_SEED,
+        "split_strategy": SPLIT_STRATEGY,
+        "split_assignment": "label_aware_cluster_components" if SPLIT_STRATEGY in {"protein", "cluster"} else "random_rows",
+        "cluster_min_seq_id": CLUSTER_MIN_SEQ_ID if SPLIT_STRATEGY == "cluster" else None,
+        "cluster_coverage": CLUSTER_COVERAGE if SPLIT_STRATEGY == "cluster" else None,
+        "sequence_cluster_tsv_path": str(SEQUENCE_CLUSTER_TSV_PATH) if SPLIT_STRATEGY == "cluster" else None,
+        "dropped_cross_split": dropped_cross_split,
+        "train_fraction": TRAIN_FRACTION,
+        "val_fraction": VAL_FRACTION,
+        "test_fraction": TEST_FRACTION,
+        "max_length": MAX_LENGTH,
+        "pad_token_id": tokenizer.pad_token_id,
+        "cache_format": "interaction_group_pair_v1",
+      },
+      "splits": tokenized_splits,
     },
-    "splits": tokenized_splits,
-  }
-  if TRAIN_CACHE_PATH.exists():
-    verify_classifier_cache(torch.load(TRAIN_CACHE_PATH, map_location="cpu"), payload)
-    print("Verified unchanged baseline classifier splits, tokens, sources, and labels")
-  torch.save(payload, TRAIN_CACHE_PATH)
+    TRAIN_CACHE_PATH,
+  )
   print(f"Saved interaction tokenized splits -> {TRAIN_CACHE_PATH}")
 finally:
   con.close()
