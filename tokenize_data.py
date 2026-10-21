@@ -8,9 +8,7 @@ import random
 import re
 import shutil
 import subprocess
-import tempfile
 from collections import Counter, defaultdict
-from pathlib import Path
 from typing import Dict, List
 
 import duckdb
@@ -117,7 +115,6 @@ def _read_cluster_assignments(path, valid_sequence_ids) -> Dict[str, str]:
 
 
 def _run_mmseqs_clustering(sequences: List[str]):
-  """Recluster all input sequences in isolation and publish only valid output."""
   if shutil.which(MMSEQS_BINARY) is None:
     raise RuntimeError(
       f"SPLIT_STRATEGY='cluster' requires {MMSEQS_BINARY!r} or a precomputed "
@@ -126,55 +123,44 @@ def _run_mmseqs_clustering(sequences: List[str]):
     )
 
   _write_sequence_fasta(sequences, SEQUENCE_CLUSTER_FASTA_PATH)
+  output_prefix = SEQUENCE_CLUSTER_TSV_PATH.with_suffix("")
   SEQUENCE_CLUSTER_WORK_DIR.mkdir(parents=True, exist_ok=True)
-  SEQUENCE_CLUSTER_TSV_PATH.parent.mkdir(parents=True, exist_ok=True)
-  # Keep output on the destination filesystem for an atomic replacement. Both
-  # output and work directories are fresh, so MMseqs cannot reuse stale results.
-  with tempfile.TemporaryDirectory(prefix="clusters-", dir=SEQUENCE_CLUSTER_TSV_PATH.parent) as output_dir, \
-       tempfile.TemporaryDirectory(prefix="work-", dir=SEQUENCE_CLUSTER_WORK_DIR) as work_dir:
-    output_prefix = Path(output_dir) / "sequences"
-    command = [
-      MMSEQS_BINARY,
-      "easy-cluster",
-      str(SEQUENCE_CLUSTER_FASTA_PATH),
-      str(output_prefix),
-      work_dir,
-      "--min-seq-id",
-      str(CLUSTER_MIN_SEQ_ID),
-      "-c",
-      str(CLUSTER_COVERAGE),
-      "--cov-mode",
-      "0",
-    ]
-    subprocess.run(command, check=True)
 
-    generated_tsv = output_prefix.parent / f"{output_prefix.name}_cluster.tsv"
-    if not generated_tsv.exists():
-      raise FileNotFoundError(f"MMseqs2 did not create expected cluster TSV: {generated_tsv}")
-    _read_cluster_assignments(generated_tsv, {_sequence_id(sequence) for sequence in sequences})
-    generated_tsv.replace(SEQUENCE_CLUSTER_TSV_PATH)
+  command = [
+    MMSEQS_BINARY,
+    "easy-cluster",
+    str(SEQUENCE_CLUSTER_FASTA_PATH),
+    str(output_prefix),
+    str(SEQUENCE_CLUSTER_WORK_DIR),
+    "--min-seq-id",
+    str(CLUSTER_MIN_SEQ_ID),
+    "-c",
+    str(CLUSTER_COVERAGE),
+    "--cov-mode",
+    "0",
+  ]
+  subprocess.run(command, check=True)
+
+  generated_tsv = output_prefix.parent / f"{output_prefix.name}_cluster.tsv"
+  if not generated_tsv.exists():
+    raise FileNotFoundError(f"MMseqs2 did not create expected cluster TSV: {generated_tsv}")
+
+  generated_tsv.replace(SEQUENCE_CLUSTER_TSV_PATH)
 
 
 def _load_sequence_clusters(records) -> Dict[str, str]:
-  """Reuse complete assignments; rebuild the full clustering when data expands."""
   sequences = _all_unique_sequences(records)
   sequence_to_id = {sequence: _sequence_id(sequence) for sequence in sequences}
   valid_sequence_ids = set(sequence_to_id.values())
 
-  id_to_cluster = None
-  if SEQUENCE_CLUSTER_TSV_PATH.exists():
-    try:
-      id_to_cluster = _read_cluster_assignments(SEQUENCE_CLUSTER_TSV_PATH, valid_sequence_ids)
-    except ValueError as exc:
-      print(f"Cached cluster assignments are stale or invalid: {exc}", flush=True)
-  if id_to_cluster is None:
+  if not SEQUENCE_CLUSTER_TSV_PATH.exists():
     print(
-      f"Rebuilding cluster assignments for all {len(sequences)} unique sequences; running MMseqs2 "
+      f"Cluster file not found at {SEQUENCE_CLUSTER_TSV_PATH}; running MMseqs2 "
       f"min_seq_id={CLUSTER_MIN_SEQ_ID} coverage={CLUSTER_COVERAGE}"
     )
     _run_mmseqs_clustering(sequences)
-    id_to_cluster = _read_cluster_assignments(SEQUENCE_CLUSTER_TSV_PATH, valid_sequence_ids)
 
+  id_to_cluster = _read_cluster_assignments(SEQUENCE_CLUSTER_TSV_PATH, valid_sequence_ids)
   return {sequence: id_to_cluster[sequence_id] for sequence, sequence_id in sequence_to_id.items()}
 
 

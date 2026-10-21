@@ -21,7 +21,6 @@ from .literature_affinity import iter_literature_affinity
 from .negatome import iter_negatome
 from .ppb_affinity import iter_ppb_affinity
 from .skempi import iter_skempi
-from .snooppi import iter_snooppi
 from .string_db import iter_string
 
 
@@ -33,8 +32,6 @@ def build_source_specs() -> List[SourceSpec]:
     SourceSpec(name="intact", loader=iter_intact),
     SourceSpec(name="negatome", loader=iter_negatome),
     SourceSpec(name="string", loader=iter_string),
-    # Append for the initial test: duplicates retain existing source labels.
-    SourceSpec(name="snooppi", loader=iter_snooppi),
   ]
 
 
